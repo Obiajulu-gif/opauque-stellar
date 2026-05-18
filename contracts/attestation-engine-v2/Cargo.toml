@@ -1,0 +1,14 @@
+[package]
+name = "attestation-engine-v2"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+soroban-sdk = { workspace = true }
+sha2 = { version = "0.10", default-features = false }
+[dev_dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
