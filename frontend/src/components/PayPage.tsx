@@ -6,10 +6,8 @@ import { useState, useEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import { useParams, useNavigate } from "react-router-dom";
 import {
-  Asset,
   BASE_FEE,
   Contract,
-  Operation,
   TransactionBuilder,
   nativeToScVal,
 } from "@stellar/stellar-sdk";
@@ -21,7 +19,7 @@ import { getConfigForCluster } from "../contracts/contract-config";
 import { SCHEME_ID_SECP256K1 } from "../lib/contracts";
 import { getExplorerTxUrl } from "../lib/explorer";
 import { useWallet } from "../hooks/useWallet";
-import { bytesToScVal, getHorizonServer, getSorobanServer, parseXlmToStroops, u64ToScVal } from "../lib/stellar";
+import { bytesToScVal, buildNativeTransferOperation, getHorizonServer, getSorobanServer, parseXlmToStroops, u64ToScVal } from "../lib/stellar";
 import { deployedAddresses } from "../contracts/deployedAddresses";
 
 function isDirectMetaAddress(s: string): boolean {
@@ -157,17 +155,18 @@ export function PayPage() {
       const passphrase = getNetworkPassphrase();
       const source = await getHorizonServer().loadAccount(address);
       const announcer = new Contract(deployedAddresses.stealthAnnouncer);
+      // Create the stealth account on first send; fall back to payment when
+      // it already exists (a plain payment to an unfunded account would fail).
+      const transferOp = await buildNativeTransferOperation({
+        destination: stealthStellarAddress,
+        amountStroops: inputStroops,
+      });
+
       let tx = new TransactionBuilder(source, {
         fee: BASE_FEE,
         networkPassphrase: passphrase,
       })
-        .addOperation(
-          Operation.payment({
-            destination: stealthStellarAddress,
-            asset: Asset.native(),
-            amount: (Number(inputStroops) / 1e7).toFixed(7),
-          }),
-        )
+        .addOperation(transferOp)
         .addOperation(
           announcer.call(
             "announce",

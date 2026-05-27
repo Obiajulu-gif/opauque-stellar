@@ -156,6 +156,11 @@ impl ReputationVerifier {
             return Err(ReputationError::NullifierUsed);
         }
 
+        // V1 public signal order (canonical — see docs/PUBLIC_SIGNALS.md):
+        //   [0] nullifier  [1] is_valid (bound to 1)  [2] merkle_root
+        //   [3] attestation_id  [4] external_nullifier
+        // This MUST match circuits/stealth_attestation.circom and the frontend
+        // prover in frontend/src/lib/reputationProver.ts.
         let mut pub_signals = Vec::new(&env);
         pub_signals.push_back(nullifier.clone());
         let mut one = [0u8; 32];
