@@ -172,7 +172,9 @@ const V2_ATTESTATION_MARKER: u8 = 0xB2;
 ///   byte[34..66] = issuer pubkey [u8; 32] (first 32 bytes of compressed ed25519 key)
 ///   byte[66..98] = attestation_uid [u8; 32]
 ///   byte[98..130] = nonce [u8; 32]  (used in Merkle leaf construction)
+///   byte[130..134] = expiration_ledger [u8; 4] (big-endian u32, optional, default 0 = never expires)
 const V2_METADATA_MIN_LEN: usize = 130;
+const V2_METADATA_WITH_EXPIRY_LEN: usize = 134;
 
 /// A V2 discovered trait — schema-bound, issuer-verified, ready for ZK proof gen.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -204,6 +206,8 @@ pub struct V2StealthAttestation {
     /// True if this was issued by the schema authority or a known delegate.
     /// Rogue traits have this set to false and are filtered by default.
     pub issuer_authorized: bool,
+    /// Ledger number at which this attestation expires (0 = never expires).
+    pub expiration_slot: u64,
 }
 
 /// All fields needed to reconstruct the V2 Poseidon leaf in the browser prover.
@@ -229,6 +233,8 @@ pub struct V2AnnouncementFields {
     pub issuer: [u8; 32],
     pub attestation_uid: [u8; 32],
     pub nonce: [u8; 32],
+    /// Ledger number at which this attestation expires (0 = never expires).
+    pub expiration_ledger: u32,
 }
 
 /// Parses V2 fields from announcement metadata, returning None if not a V2 announcement.
@@ -249,31 +255,41 @@ pub fn extract_v2_fields(metadata: &[u8]) -> Option<V2AnnouncementFields> {
     attestation_uid.copy_from_slice(&metadata[66..98]);
     nonce.copy_from_slice(&metadata[98..130]);
 
+    let expiration_ledger = if metadata.len() >= V2_METADATA_WITH_EXPIRY_LEN {
+        u32::from_be_bytes([metadata[130], metadata[131], metadata[132], metadata[133]])
+    } else {
+        0
+    };
+
     Some(V2AnnouncementFields {
         schema_id,
         issuer,
         attestation_uid,
         nonce,
+        expiration_ledger,
     })
 }
 
 /// Encodes a V2 announcement metadata payload.
 ///
-/// Layout: view_tag || 0xB2 || schema_id[32] || issuer[32] || attestation_uid[32] || nonce[32]
+/// Layout: view_tag || 0xB2 || schema_id[32] || issuer[32] || attestation_uid[32] || nonce[32] || expiration_ledger[4]
+/// The expiration_ledger is optional (0 = never expires).
 pub fn encode_v2_attestation_metadata(
     view_tag: u8,
     schema_id: &[u8; 32],
     issuer: &[u8; 32],
     attestation_uid: &[u8; 32],
     nonce: &[u8; 32],
+    expiration_ledger: u32,
 ) -> Vec<u8> {
-    let mut metadata = Vec::with_capacity(V2_METADATA_MIN_LEN);
+    let mut metadata = Vec::with_capacity(V2_METADATA_WITH_EXPIRY_LEN);
     metadata.push(view_tag);
     metadata.push(V2_ATTESTATION_MARKER);
     metadata.extend_from_slice(schema_id);
     metadata.extend_from_slice(issuer);
     metadata.extend_from_slice(attestation_uid);
     metadata.extend_from_slice(nonce);
+    metadata.extend_from_slice(&expiration_ledger.to_be_bytes());
     metadata
 }
 
@@ -366,31 +382,36 @@ pub fn scan_for_attestations_v2(
             }
         }
 
-        // Step 8: Build the leaf preimage struct for the browser prover.
-        // The actual Poseidon computation happens in JS with poseidon-lite.
-        let stealth_addr_hex = format!("{:#x}", ann.stealth_address);
-        let merkle_leaf_preimage = MerkleLeafPreimage {
-            stealth_pk_field: "0".to_string(), // caller fills from stealth privkey
-            schema_id_field: bytes_to_field_decimal(&v2.schema_id),
-            issuer_pk_x: bytes_to_field_decimal(&v2.issuer),
-            trait_data_hash: "0".to_string(), // caller fills after decoding data
-            nonce_field: bytes_to_field_decimal(&v2.nonce),
-        };
+    // Step 8: Check attestation-level expiration against current slot
+    let expiration_slot = v2.expiration_ledger as u64;
+    let is_valid = expiration_slot == 0 || current_slot < expiration_slot;
 
-        results.push(V2StealthAttestation {
-            stealth_address: stealth_addr_hex,
-            schema_id: hex_encode(&v2.schema_id),
-            schema_name: Some(schema.name.clone()),
-            issuer: hex_encode(&v2.issuer),
-            attestation_uid: hex_encode(&v2.attestation_uid),
-            data_hex: String::new(), // encrypted payload decoded by caller with shared secret
-            nonce: hex_encode(&v2.nonce),
-            merkle_leaf_preimage,
-            tx_hash: ann.tx_hash.clone(),
-            slot: ann.block_number,
-            is_valid: true, // caller re-validates against AttestationPDA on chain
-            issuer_authorized,
-        });
+    // Step 9: Build the leaf preimage struct for the browser prover.
+    // The actual Poseidon computation happens in JS with poseidon-lite.
+    let stealth_addr_hex = format!("{:#x}", ann.stealth_address);
+    let merkle_leaf_preimage = MerkleLeafPreimage {
+        stealth_pk_field: "0".to_string(), // caller fills from stealth privkey
+        schema_id_field: bytes_to_field_decimal(&v2.schema_id),
+        issuer_pk_x: bytes_to_field_decimal(&v2.issuer),
+        trait_data_hash: "0".to_string(), // caller fills after decoding data
+        nonce_field: bytes_to_field_decimal(&v2.nonce),
+    };
+
+    results.push(V2StealthAttestation {
+        stealth_address: stealth_addr_hex,
+        schema_id: hex_encode(&v2.schema_id),
+        schema_name: Some(schema.name.clone()),
+        issuer: hex_encode(&v2.issuer),
+        attestation_uid: hex_encode(&v2.attestation_uid),
+        data_hex: String::new(), // encrypted payload decoded by caller with shared secret
+        nonce: hex_encode(&v2.nonce),
+        merkle_leaf_preimage,
+        tx_hash: ann.tx_hash.clone(),
+        slot: ann.block_number,
+        is_valid,
+        issuer_authorized,
+        expiration_slot,
+    });
     }
 
     Ok(results)
