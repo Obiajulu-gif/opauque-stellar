@@ -137,7 +137,10 @@ export function ProveTraitModal({ trait, onClose }: ProveTraitModalProps) {
     // If a proof already exists, retry only the on-chain submission path.
     if (proofState.proof) {
       try {
-        const latestRoot = await fetchLatestValidMerkleRoot();
+        if (!publicKey) {
+          throw new Error("Connect your wallet to retry proof submission.");
+        }
+        const latestRoot = await fetchLatestValidMerkleRoot(publicKey);
         const rootHex = `0x${Array.from(latestRoot)
           .map((b) => b.toString(16).padStart(2, "0"))
           .join("")}`;
@@ -150,7 +153,7 @@ export function ProveTraitModal({ trait, onClose }: ProveTraitModalProps) {
       return;
     }
     await handleGenerate();
-  }, [proofState.proof, handleSubmit, handleGenerate, setProofError]);
+  }, [proofState.proof, publicKey, handleSubmit, handleGenerate, setProofError]);
 
   const handleClose = () => {
     resetProof();
