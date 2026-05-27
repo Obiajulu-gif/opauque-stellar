@@ -1,19 +1,10 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Symbol};
 
 /// Stealth Address Announcer — emits events when funds are sent to a stealth address.
 /// scheme_id 1 = secp256k1; metadata[0] = view tag.
 #[contract]
 pub struct StealthAnnouncer;
-
-#[contractevent]
-pub struct Announcement {
-    pub scheme_id: u64,
-    pub stealth_address: Bytes,
-    pub caller: Address,
-    pub ephemeral_pub_key: Bytes,
-    pub metadata: Bytes,
-}
 
 #[contracttype]
 #[derive(Clone)]
@@ -57,13 +48,7 @@ impl StealthAnnouncer {
         Self::validate(&ephemeral_pub_key, &metadata)?;
         env.events().publish(
             (Symbol::new(&env, "Announcement"),),
-            Announcement {
-                scheme_id,
-                stealth_address,
-                caller,
-                ephemeral_pub_key,
-                metadata,
-            },
+            (scheme_id, stealth_address, caller, ephemeral_pub_key, metadata),
         );
         Ok(())
     }
@@ -94,13 +79,7 @@ impl StealthAnnouncer {
             .set(&log_key(&caller, &log_id), &log);
         env.events().publish(
             (Symbol::new(&env, "Announcement"),),
-            Announcement {
-                scheme_id,
-                stealth_address,
-                caller,
-                ephemeral_pub_key,
-                metadata,
-            },
+            (scheme_id, stealth_address, caller, ephemeral_pub_key, metadata),
         );
         Ok(())
     }

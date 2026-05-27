@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol, Vec};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, BytesN, Env, IntoVal, Symbol, Vec};
 
 const ROOT_EXPIRY_LEDGERS: u32 = 17_280; // ~1 day at 5s/ledger
 const MAX_ROOT_HISTORY: u32 = 100;
@@ -26,22 +26,6 @@ pub struct MerkleRootEntry {
 #[derive(Clone)]
 pub struct NullifierEntry {
     pub used: bool,
-}
-
-#[contractevent]
-pub struct ReputationVerified {
-    pub attestation_id: u64,
-    pub nullifier: BytesN<32>,
-    pub verifier: Address,
-    pub merkle_root: BytesN<32>,
-}
-
-#[contractevent]
-pub struct MerkleRootPublished {
-    pub merkle_root: BytesN<32>,
-    pub ledger: u32,
-    pub dataset_hash: BytesN<32>,
-    pub admin: Address,
 }
 
 #[contracterror]
@@ -125,12 +109,7 @@ impl ReputationVerifier {
 
         env.events().publish(
             (Symbol::new(&env, "MerkleRootPublished"),),
-            MerkleRootPublished {
-                merkle_root: root.clone(),
-                ledger,
-                dataset_hash,
-                admin,
-            },
+            (root.clone(), ledger, dataset_hash, admin),
         );
         Ok(())
     }
@@ -204,12 +183,7 @@ impl ReputationVerifier {
 
         env.events().publish(
             (Symbol::new(&env, "ReputationVerified"),),
-            ReputationVerified {
-                attestation_id,
-                nullifier,
-                verifier: user,
-                merkle_root: root,
-            },
+            (attestation_id, nullifier, user, root),
         );
         Ok(())
     }

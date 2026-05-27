@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, Env, Symbol};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, Bytes, Env, Symbol};
 
 /// Stealth Meta-Address Registry — maps Stellar accounts to stealth meta-addresses.
 /// Equivalent to ERC-6538. scheme_id 1 = secp256k1 with view tags.
@@ -12,19 +12,6 @@ pub struct RegistryEntry {
     pub registrant: Address,
     pub scheme_id: u64,
     pub stealth_meta_address: Bytes,
-}
-
-#[contractevent]
-pub struct StealthMetaAddressSet {
-    pub registrant: Address,
-    pub scheme_id: u64,
-    pub stealth_meta_address: Bytes,
-}
-
-#[contractevent]
-pub struct NonceIncremented {
-    pub registrant: Address,
-    pub new_nonce: u64,
 }
 
 #[contracterror]
@@ -64,11 +51,7 @@ impl StealthRegistry {
             .set(&registry_key(&registrant, scheme_id), &entry);
         env.events().publish(
             (Symbol::new(&env, "StealthMetaAddressSet"),),
-            StealthMetaAddressSet {
-                registrant,
-                scheme_id,
-                stealth_meta_address,
-            },
+            (registrant, scheme_id, stealth_meta_address),
         );
         Ok(())
     }
@@ -81,10 +64,7 @@ impl StealthRegistry {
         env.storage().persistent().set(&key, &new_nonce);
         env.events().publish(
             (Symbol::new(&env, "NonceIncremented"),),
-            NonceIncremented {
-                registrant: registrant.clone(),
-                new_nonce,
-            },
+            (registrant.clone(), new_nonce),
         );
         new_nonce
     }

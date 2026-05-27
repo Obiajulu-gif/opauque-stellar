@@ -1,7 +1,7 @@
 #![no_std]
 use sha2::{Digest, Sha256};
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Bytes, BytesN,
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN,
     Env, IntoVal, Symbol,
 };
 
@@ -22,14 +22,6 @@ pub struct Attestation {
     pub ref_uid: BytesN<32>,
 }
 
-#[contractevent]
-pub struct AttestationCreated {
-    pub uid: BytesN<32>,
-    pub schema_id: BytesN<32>,
-    pub issuer: Address,
-    pub stealth_address_hash: BytesN<32>,
-}
-
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -37,6 +29,10 @@ pub enum AttestationError {
     DataTooLarge = 1,
     UnauthorizedIssuer = 2,
     ExpirationInPast = 3,
+    AttestationNotFound = 4,
+    AlreadyRevoked = 5,
+    NotRevocable = 6,
+    Unauthorized = 7,
 }
 
 fn attestation_key(uid: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -46,13 +42,11 @@ fn attestation_key(uid: &BytesN<32>) -> (Symbol, BytesN<32>) {
 fn compute_attestation_uid(
     env: &Env,
     schema_id: &BytesN<32>,
-    issuer: &Address,
     stealth_hash: &BytesN<32>,
     ledger: u32,
 ) -> BytesN<32> {
     let mut hasher = Sha256::new();
     hasher.update(schema_id.to_array());
-    hasher.update(issuer.to_string().as_bytes());
     hasher.update(stealth_hash.to_array());
     hasher.update(ledger.to_be_bytes());
     BytesN::from_array(env, &hasher.finalize().into())
@@ -86,12 +80,12 @@ impl AttestationEngineV2 {
         if !authorized {
             return Err(AttestationError::UnauthorizedIssuer);
         }
-        let uid = compute_attestation_uid(&env, &schema_id, &issuer, &stealth_address_hash, ledger);
+        let uid = compute_attestation_uid(&env, &schema_id, &stealth_address_hash, ledger);
         let attestation = Attestation {
             uid: uid.clone(),
             schema_id: schema_id.clone(),
             issuer: issuer.clone(),
-            stealth_address_hash,
+            stealth_address_hash: stealth_address_hash.clone(),
             data,
             created_at: ledger,
             expiration_ledger,
@@ -103,13 +97,49 @@ impl AttestationEngineV2 {
             .set(&attestation_key(&uid), &attestation);
         env.events().publish(
             (Symbol::new(&env, "AttestationCreated"),),
-            AttestationCreated {
-                uid: uid.clone(),
-                schema_id,
-                issuer,
-                stealth_address_hash,
-            },
+            (uid.clone(), schema_id, issuer, stealth_address_hash),
         );
         Ok(uid)
+    }
+
+    pub fn revoke_attestation(
+        env: Env,
+        revoker: Address,
+        uid: BytesN<32>,
+        schema_registry: Address,
+    ) -> Result<(), AttestationError> {
+        revoker.require_auth();
+        let key = attestation_key(&uid);
+        let mut attestation: Attestation = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(AttestationError::AttestationNotFound)?;
+        if attestation.revocation_ledger != 0 {
+            return Err(AttestationError::AlreadyRevoked);
+        }
+        let revocable: bool = env.invoke_contract(
+            &schema_registry,
+            &Symbol::new(&env, "is_revocable"),
+            (attestation.schema_id.clone(),).into_val(&env),
+        );
+        if !revocable {
+            return Err(AttestationError::NotRevocable);
+        }
+        let authorized: bool = env.invoke_contract(
+            &schema_registry,
+            &Symbol::new(&env, "is_authorized_issuer"),
+            (attestation.schema_id.clone(), revoker.clone()).into_val(&env),
+        );
+        if !authorized && revoker != attestation.issuer {
+            return Err(AttestationError::Unauthorized);
+        }
+        attestation.revocation_ledger = env.ledger().sequence();
+        env.storage().persistent().set(&key, &attestation);
+        env.events().publish(
+            (Symbol::new(&env, "AttestationRevoked"),),
+            (uid, revoker),
+        );
+        Ok(())
     }
 }

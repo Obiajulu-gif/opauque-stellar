@@ -1,5 +1,6 @@
 #![no_std]
-use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Bytes, BytesN, Env};
+use soroban_sdk::{contract, contracterror, contractimpl, contracttype, BytesN, Env, Vec};
+use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr};
 
 /// On-chain Groth16 verifier using Stellar's BN254 host functions (CAP-74).
 #[contract]
@@ -168,9 +169,9 @@ fn field_negate(a: &[u8]) -> [u8; 32] {
 }
 
 fn alt_bn128_g1_add(env: &Env, a: &[u8; 64], b: &[u8; 64]) -> Result<[u8; 64], VerifierError> {
-    let a_pt = BytesN::from_array(env, a);
-    let b_pt = BytesN::from_array(env, b);
-    Ok(env.crypto().bn254_g1_add(&a_pt, &b_pt).to_array())
+    let a_pt = Bn254G1Affine::from_array(env, a);
+    let b_pt = Bn254G1Affine::from_array(env, b);
+    Ok(env.crypto().bn254().g1_add(&a_pt, &b_pt).to_array())
 }
 
 fn alt_bn128_g1_mul(
@@ -178,14 +179,25 @@ fn alt_bn128_g1_mul(
     point: &[u8; 64],
     scalar: &[u8; 32],
 ) -> Result<[u8; 64], VerifierError> {
-    let pt = BytesN::from_array(env, point);
-    let sc = BytesN::from_array(env, scalar);
-    Ok(env.crypto().bn254_g1_mul(&pt, &sc).to_array())
+    let pt = Bn254G1Affine::from_array(env, point);
+    let sc = Fr::from_bytes(BytesN::from_array(env, scalar));
+    Ok(env.crypto().bn254().g1_mul(&pt, &sc).to_array())
 }
 
 fn alt_bn128_pairing(env: &Env, input: &[u8]) -> Result<bool, VerifierError> {
-    let bytes = Bytes::from_slice(env, input);
-    Ok(env.crypto().bn254_pairing_check(&bytes))
+    let mut g1_points: Vec<Bn254G1Affine> = Vec::new(env);
+    let mut g2_points: Vec<Bn254G2Affine> = Vec::new(env);
+    let mut offset = 0usize;
+    while offset + 192 <= input.len() {
+        let mut g1_arr = [0u8; 64];
+        g1_arr.copy_from_slice(&input[offset..offset + 64]);
+        let mut g2_arr = [0u8; 128];
+        g2_arr.copy_from_slice(&input[offset + 64..offset + 192]);
+        g1_points.push_back(Bn254G1Affine::from_array(env, &g1_arr));
+        g2_points.push_back(Bn254G2Affine::from_array(env, &g2_arr));
+        offset += 192;
+    }
+    Ok(env.crypto().bn254().pairing_check(g1_points, g2_points))
 }
 
 // ---------------------------------------------------------------------------
@@ -193,29 +205,6 @@ fn alt_bn128_pairing(env: &Env, input: &[u8]) -> Result<bool, VerifierError> {
 // Encoded as big-endian 32-byte field elements.
 // These match the Solidity Groth16Verifier.sol constants.
 // ---------------------------------------------------------------------------
-
-fn u256_to_be(val: &str) -> [u8; 32] {
-    let mut bytes = [0u8; 32];
-    let n = val.parse::<u128>().unwrap_or(0);
-    bytes[16..32].copy_from_slice(&n.to_be_bytes());
-    bytes
-}
-
-macro_rules! g1_point {
-    ($x:expr, $y:expr) => {{
-        let mut point = [0u8; 64];
-        let x_bytes = uint256_to_bytes($x);
-        let y_bytes = uint256_to_bytes($y);
-        point[..32].copy_from_slice(&x_bytes);
-        point[32..64].copy_from_slice(&y_bytes);
-        point
-    }};
-}
-
-/// Convert a decimal string to big-endian 32 bytes.
-const fn uint256_to_bytes(val: &[u8; 32]) -> [u8; 32] {
-    *val
-}
 
 // Verification key points — these are the same constants from the Solidity verifier.
 // They must be re-encoded when the circuit changes (re-run trusted setup).
