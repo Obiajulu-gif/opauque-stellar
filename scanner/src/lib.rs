@@ -352,7 +352,7 @@ pub fn encode_attestation_metadata_wasm(view_tag: u8, attestation_id: u64) -> St
 
 /// Encodes V2 attestation metadata for use in stealth announcements.
 ///
-/// Layout: view_tag(1) || 0xB2(1) || schema_id(32) || issuer(32) || attestation_uid(32) || nonce(32)
+/// Layout: view_tag(1) || 0xB2(1) || schema_id(32) || issuer(32) || attestation_uid(32) || nonce(32) || expiration_ledger(4)
 ///
 /// # Arguments
 /// * `view_tag` - View tag byte (0-255)
@@ -360,6 +360,7 @@ pub fn encode_attestation_metadata_wasm(view_tag: u8, attestation_id: u64) -> St
 /// * `issuer_hex` - Issuer pubkey as 64-char hex string (32 bytes)
 /// * `attestation_uid_hex` - Attestation UID as 64-char hex string (32 bytes)
 /// * `nonce_hex` - Random nonce as 64-char hex string (32 bytes)
+/// * `expiration_ledger` - Ledger number at which this attestation expires (0 = never expires)
 ///
 /// # Returns
 /// Hex-encoded metadata bytes (0x-prefixed).
@@ -370,6 +371,7 @@ pub fn encode_v2_attestation_metadata_wasm(
     issuer_hex: &str,
     attestation_uid_hex: &str,
     nonce_hex: &str,
+    expiration_ledger: u32,
 ) -> Result<String, JsValue> {
     let schema_id = parse_hex32(schema_id_hex)?;
     let issuer = parse_hex32(issuer_hex)?;
@@ -382,6 +384,7 @@ pub fn encode_v2_attestation_metadata_wasm(
         &issuer,
         &attestation_uid,
         &nonce,
+        expiration_ledger,
     );
     Ok(format!("0x{}", metadata.iter().map(|b| format!("{:02x}", b)).collect::<String>()))
 }

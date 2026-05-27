@@ -36,6 +36,7 @@ pub struct AttestationCreated {
 pub enum AttestationError {
     DataTooLarge = 1,
     UnauthorizedIssuer = 2,
+    ExpirationInPast = 3,
 }
 
 fn attestation_key(uid: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -73,6 +74,10 @@ impl AttestationEngineV2 {
         if data.len() > 512 {
             return Err(AttestationError::DataTooLarge);
         }
+        let ledger = env.ledger().sequence();
+        if expiration_ledger != 0 && expiration_ledger <= ledger {
+            return Err(AttestationError::ExpirationInPast);
+        }
         let authorized: bool = env.invoke_contract(
             &schema_registry,
             &Symbol::new(&env, "is_authorized_issuer"),
@@ -81,7 +86,6 @@ impl AttestationEngineV2 {
         if !authorized {
             return Err(AttestationError::UnauthorizedIssuer);
         }
-        let ledger = env.ledger().sequence();
         let uid = compute_attestation_uid(&env, &schema_id, &issuer, &stealth_address_hash, ledger);
         let attestation = Attestation {
             uid: uid.clone(),

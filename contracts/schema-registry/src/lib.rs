@@ -39,17 +39,18 @@ pub enum SchemaError {
     DelegateLimitReached = 5,
     DelegateAlreadyExists = 6,
     DelegateNotFound = 7,
+    SchemaAlreadyExists = 8,
 }
 
 fn schema_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(&schema_id.env(), "schema"), schema_id.clone())
 }
 
-pub fn compute_schema_id(env: &Env, authority: &Address, name: &str, version: u8) -> BytesN<32> {
+pub fn compute_schema_id(env: &Env, authority: &Address, name: &str, version: u32) -> BytesN<32> {
     let mut hasher = Sha256::new();
     hasher.update(authority.to_string().as_bytes());
     hasher.update(name.as_bytes());
-    hasher.update([version]);
+    hasher.update(version.to_be_bytes());
     let digest = hasher.finalize();
     BytesN::from_array(env, &digest.into())
 }
@@ -63,6 +64,7 @@ impl SchemaRegistry {
         name: SorobanString,
         field_definitions: SorobanString,
         revocable: bool,
+        version: u32,
         resolver: Option<Address>,
         schema_expiry_ledger: u32,
     ) -> Result<(), SchemaError> {
@@ -73,8 +75,11 @@ impl SchemaRegistry {
         if field_definitions.len() > 256 {
             return Err(SchemaError::FieldDefsTooLong);
         }
+        if env.storage().persistent().has(&schema_key(&schema_id)) {
+            return Err(SchemaError::SchemaAlreadyExists);
+        }
         let name_str = name.to_string();
-        let expected = compute_schema_id(&env, &authority, &name_str, 1);
+        let expected = compute_schema_id(&env, &authority, &name_str, version);
         if schema_id != expected {
             return Err(SchemaError::InvalidSchemaId);
         }
@@ -85,8 +90,8 @@ impl SchemaRegistry {
             revocable,
             name: name.clone(),
             field_definitions,
-            version: 1,
             delegates: SorobanVec::new(&env),
+            version,
             created_at: env.ledger().sequence(),
             schema_expiry_ledger,
             deprecated: false,
