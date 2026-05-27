@@ -9,9 +9,10 @@
 import type { OpaqueWasmModule } from "../hooks/useOpaqueWasm";
 import type { ProofData, DiscoveredTrait } from "./reputation";
 import { reputationAddresses } from "../contracts/reputationAddresses";
-import { nativeToScVal } from "@stellar/stellar-sdk";
-import { bytesToScVal, invokeContractMethod, u64ToScVal } from "./stellar";
+import { BASE_FEE, Contract, TransactionBuilder, nativeToScVal } from "@stellar/stellar-sdk";
+import { bytesToScVal, getSorobanServer, invokeContractMethod, u64ToScVal } from "./stellar";
 import type { SignTxFn } from "./stellar";
+import { getNetworkPassphrase } from "./chain";
 // @ts-expect-error snarkjs has no bundled types
 import * as snarkjs from "snarkjs";
 
@@ -167,13 +168,37 @@ function bigIntToBytes32(val: bigint): Uint8Array {
 }
 
 /**
- * Fetch the latest valid Merkle root from the on-chain root history.
+ * Fetch the latest valid Merkle root from the on-chain root history
+ * by simulating the `get_latest_root` view function on the ReputationVerifier contract.
  */
-export async function fetchLatestValidMerkleRoot(): Promise<Uint8Array> {
-  // After deploy, read root history from contract storage via admin tooling.
-  // For devnet bootstrap, use the zero-hash tree root from an empty depth-20 tree.
-  console.warn("[Opaque] Using placeholder Merkle root — update via ReputationVerifier admin after indexing.");
-  return new Uint8Array(32);
+export async function fetchLatestValidMerkleRoot(sourcePublicKey: string): Promise<Uint8Array> {
+  const server = getSorobanServer();
+  const passphrase = getNetworkPassphrase();
+  const source = await server.getAccount(sourcePublicKey);
+  const contract = new Contract(REPUTATION_CONTRACT_ID);
+  let tx = new TransactionBuilder(source, {
+    fee: BASE_FEE,
+    networkPassphrase: passphrase,
+  })
+    .addOperation(contract.call("get_latest_root"))
+    .setTimeout(30)
+    .build();
+  tx = await server.prepareTransaction(tx);
+  const sim = await server.simulateTransaction(tx);
+  if (!("result" in sim) || !sim.result) {
+    throw new Error("No valid Merkle root available — contract may not be initialized or root has expired.");
+  }
+  const retval = sim.result.retval;
+  const v = retval as { bytes?: () => Buffer };
+  if (!v.bytes) {
+    throw new Error("Unexpected response from contract when fetching Merkle root.");
+  }
+  const rootBytes = Uint8Array.from(v.bytes());
+  const isZero = rootBytes.every((b) => b === 0);
+  if (isZero) {
+    throw new Error("Latest Merkle root is invalid (all zeros).");
+  }
+  return rootBytes;
 }
 
 /**

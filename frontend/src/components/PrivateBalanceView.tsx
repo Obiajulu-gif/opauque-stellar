@@ -474,7 +474,7 @@ export function PrivateBalanceView() {
         setClaimingId(null);
       }
     },
-    [cluster, pushTx, showToast, keysContext.isSetup, keysContext.getMasterKeys, wasm]
+    [cluster, pushTx, showToast, keysContext.isSetup, keysContext.getMasterKeys, wasm, logPush]
   );
 
   const handleRetrySync = useCallback(async () => {
@@ -595,7 +595,7 @@ export function PrivateBalanceView() {
       ghostFound.push(ghostTx);
     }
     setGhostTxs(ghostFound);
-  }, [cluster, wasm, keysContext.isSetup, ghostEntries, scanner.ghostBalances]);
+  }, [cluster, wasm, keysContext.isSetup, keysContext.getMasterKeys, ghostEntries, scanner]);
 
   useEffect(() => {
     if (newlyDetectedIds.length === 0) return;

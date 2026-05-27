@@ -114,6 +114,28 @@ impl ReputationVerifier {
         Ok(())
     }
 
+    pub fn get_latest_root(env: Env) -> Result<BytesN<32>, ReputationError> {
+        let history: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&history_key(&env))
+            .unwrap_or(Vec::new(&env));
+        if history.is_empty() {
+            return Err(ReputationError::RootExpired);
+        }
+        let root = history.get(history.len() - 1).unwrap();
+        let entry: MerkleRootEntry = env
+            .storage()
+            .persistent()
+            .get(&root_key(&root))
+            .ok_or(ReputationError::RootExpired)?;
+        let ledger = env.ledger().sequence();
+        if ledger.saturating_sub(entry.ledger) > ROOT_EXPIRY_LEDGERS {
+            return Err(ReputationError::RootExpired);
+        }
+        Ok(root)
+    }
+
     pub fn verify_reputation(
         env: Env,
         user: Address,
