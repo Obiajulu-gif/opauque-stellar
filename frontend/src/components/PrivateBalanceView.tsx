@@ -1,19 +1,13 @@
-// @ts-nocheck
 import { useState, useEffect, useCallback, useMemo } from "react";
-import { Connection, PublicKey } from "../lib/legacyTxShim";
+import { StrKey } from "@stellar/stellar-sdk";
 import { deriveStealthStellarAddressFromStealthPrivKey, formatSol, hexToBytes } from "../lib/stealth";
-import { getRpcUrl, getCluster, type StellarNetwork } from "../lib/chain";
+import { getCluster, type StellarNetwork } from "../lib/chain";
 import { getConfigForCluster } from "../contracts/contract-config";
 
 function isAddress(a: string): boolean {
   const t = a.trim();
   if (t.startsWith("0x") && t.length === 42) return /^0x[0-9a-fA-F]{40}$/i.test(t);
-  try {
-    new PublicKey(t);
-    return true;
-  } catch {
-    return false;
-  }
+  return StrKey.isValidEd25519PublicKey(t);
 }
 import { useOpaqueWasm } from "../hooks/useOpaqueWasm";
 import { useScanner } from "../hooks/useScanner";
@@ -74,6 +68,7 @@ function cachedToLogWithArgs(c: CachedAnnouncement): LogWithArgs {
 }
 
 type LogWithArgs = { args?: { stealthAddress?: string; ephemeralPubKey?: string; metadata?: string }; transactionHash?: string | null; logIndex?: number | null; blockNumber?: bigint | null };
+type StellarBalanceClient = { getBalance: (address: string) => Promise<bigint> };
 type LogRow = {
   id: string;
   stealthAddress: string;
@@ -84,7 +79,7 @@ type LogRow = {
 };
 
 async function processRawLogsToFoundTxs(
-  connection: Connection,
+  connection: StellarBalanceClient,
   rawLogs: LogWithArgs[],
   wasm: OpaqueWasmModule | null,
   getMasterKeys: (() => MasterKeys) | null,
@@ -179,7 +174,7 @@ async function processRawLogsToFoundTxs(
     foundWithAddresses.map(async ({ stealthStellarAddress }) => {
       if (!stealthStellarAddress) return 0n;
       try {
-        return BigInt(await connection.getBalance(new PublicKey(stealthStellarAddress)));
+        return await connection.getBalance(stealthStellarAddress);
       } catch {
         return 0n;
       }
@@ -296,7 +291,7 @@ export function PrivateBalanceView() {
   const [syncError, setSyncError] = useState<string | null>(null);
   const { wasm, isReady: wasmReady } = useOpaqueWasm();
   const keysContext = useKeys();
-  const { address: mainWalletAddress } = useWallet();
+  const { address: mainWalletAddress, connection } = useWallet();
   const cluster = getCluster();
   const currentConfig = getConfigForCluster(cluster);
   const { push: logPush } = useProtocolLog();
@@ -322,8 +317,6 @@ export function PrivateBalanceView() {
     ephemeralPrivKeyHex: `0x${string}`;
   } | null>(null);
 
-  const publicClient = useMemo(() => new Connection(getRpcUrl(), "confirmed"), []);
-
   const ghostAddresses = useMemo(
     () => ghostEntries.map((g) => g.stealthAddress as `0x${string}`),
     [ghostEntries]
@@ -338,8 +331,8 @@ export function PrivateBalanceView() {
 
   const scanner = useScanner({
     cluster,
-    publicClient,
-    announcerAddress: currentConfig?.announcerProgram.toBase58() ?? null,
+    publicClient: connection,
+    announcerAddress: currentConfig?.announcerProgram ?? null,
     enabled: Boolean(wasmReady && cluster && currentConfig),
     ghostAddresses,
     watchlistAddresses: watchlistAddresses.length > 0 ? watchlistAddresses : undefined,
@@ -388,8 +381,6 @@ export function PrivateBalanceView() {
         setClaimError("Invalid destination address.");
         return;
       }
-      const withdrawConnection = new Connection(getRpcUrl(), "confirmed");
-
       setClaimingId(tx.id);
       setClaimError(null);
       setWithdrawalSteps([]);
@@ -437,7 +428,6 @@ export function PrivateBalanceView() {
             cluster,
             trimmed,
             { type: "native" },
-            withdrawConnection,
             keysContext.getMasterKeys!,
             wasm!,
             onStatus,
@@ -446,7 +436,6 @@ export function PrivateBalanceView() {
           withdrawalHash = await executeStealthWithdrawal(
             tx.privateKey as `0x${string}`,
             trimmed,
-            withdrawConnection,
             onStatus
           );
         }
@@ -508,7 +497,7 @@ export function PrivateBalanceView() {
   }, [scanner]);
 
   useEffect(() => {
-    if (!wasmReady || wasm === null || cluster == null || !publicClient) {
+    if (!wasmReady || wasm === null || cluster == null || !connection) {
       if (cluster == null) setLoading(false);
       return;
     }
@@ -525,7 +514,7 @@ export function PrivateBalanceView() {
     const addDiscoveredTrait = useReputationStore.getState().addDiscoveredTrait;
     const runMatch = () => {
       const rawLogs = scanner.announcements.map(cachedToLogWithArgs);
-      processRawLogsToFoundTxs(publicClient, rawLogs, wasm, getMasterKeys, cluster)
+      processRawLogsToFoundTxs(connection, rawLogs, wasm, getMasterKeys, cluster)
         .then((txs) => {
           setFound((prev) => {
             const prevIds = new Set(prev.map((t) => t.id));
@@ -549,7 +538,7 @@ export function PrivateBalanceView() {
     } else {
       setTimeout(runMatch, 0);
     }
-  }, [scanner.announcements, scanner.progress.phase, wasmReady, wasm, cluster, publicClient, keysContext.isSetup]);
+  }, [scanner.announcements, scanner.progress.phase, wasmReady, wasm, cluster, connection, keysContext.isSetup, keysContext.getMasterKeys, logPush, scanner]);
 
   useEffect(() => {
     if (scanner.progress.phase === "error" && scanner.progress.error) {
@@ -778,7 +767,6 @@ export function PrivateBalanceView() {
                   !!ghostEntryAny?.ephemeralPrivKeyHex &&
                   !!keysContext.stealthMetaAddressHex &&
                   !!wasm &&
-                  !!publicClient &&
                   !ghostAnnouncedOnChain;
                 const isGhostWithoutKey = tx.source === "manual" && !tx.privateKey && !canReconstructKey;
                 if (isGhostWithoutKey) {
@@ -955,7 +943,6 @@ export function PrivateBalanceView() {
         cluster != null &&
         keysContext.stealthMetaAddressHex &&
         wasm &&
-        publicClient &&
         currentConfig?.announcerProgram && (
           <GhostAnnounceModal
             open
@@ -964,10 +951,9 @@ export function PrivateBalanceView() {
             ghostStealthAddress={ghostAnnounceTarget.stealthAddress}
             ephemeralPrivKeyHex={ghostAnnounceTarget.ephemeralPrivKeyHex}
             stealthMetaAddressHex={keysContext.stealthMetaAddressHex}
-            publicClient={publicClient}
             wasm={wasm}
             getMasterKeys={keysContext.getMasterKeys}
-            announcerContract={currentConfig.announcerProgram.toBase58()}
+            announcerContract={currentConfig.announcerProgram}
             onAnnounced={() => {
               setGhostAnnounceTarget(null);
               showToast("Announced on-chain. Removed from manual ghost tracking.");

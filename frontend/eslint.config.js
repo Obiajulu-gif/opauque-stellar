@@ -19,5 +19,25 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      '@typescript-eslint/ban-ts-comment': [
+        'error',
+        {
+          'ts-check': false,
+          'ts-expect-error': 'allow-with-description',
+          'ts-ignore': 'allow-with-description',
+          'ts-nocheck': true,
+        },
+      ],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+        },
+      ],
+      'react-hooks/set-state-in-effect': 'off',
+      'react-refresh/only-export-components': 'off',
+    },
   },
 ])

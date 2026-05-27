@@ -1,9 +1,6 @@
-// @ts-nocheck
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Connection } from "../lib/legacyTxShim";
 import { formatSol, type Hex } from "../lib/stealth";
 type Address = string;
-type PublicClient = Connection;
 import { readNativeBalance } from "../lib/readNativeBalance";
 import type { ProtocolStep } from "./ProtocolStepper";
 import { ProtocolStepper } from "./ProtocolStepper";
@@ -26,7 +23,6 @@ type GhostAnnounceModalProps = {
   ghostStealthAddress: Address;
   ephemeralPrivKeyHex: Hex;
   stealthMetaAddressHex: Hex;
-  publicClient: PublicClient;
   wasm: OpaqueWasmModule;
   getMasterKeys: () => MasterKeys;
   announcerContract: Address;
@@ -49,7 +45,6 @@ export function GhostAnnounceModal({
   ghostStealthAddress,
   ephemeralPrivKeyHex,
   stealthMetaAddressHex,
-  publicClient,
   wasm,
   getMasterKeys,
   announcerContract,
@@ -63,8 +58,8 @@ export function GhostAnnounceModal({
   const [announcerBalance, setAnnouncerBalance] = useState<bigint | null>(null);
 
   const getNativeBalance = useCallback(
-    (addr: Address) => readNativeBalance(addr, publicClient),
-    [publicClient]
+    (addr: Address) => readNativeBalance(addr),
+    []
   );
 
   const reset = useCallback(() => {
@@ -113,7 +108,6 @@ export function GhostAnnounceModal({
     ghostStealthAddress,
     ephemeralPrivKeyHex,
     announcerContract,
-    publicClient,
     wasm,
     getMasterKeys,
     getNativeBalance,
@@ -141,7 +135,6 @@ export function GhostAnnounceModal({
 
     try {
       await executeGhostOnchainAnnouncement(
-        publicClient,
         wasm,
         getMasterKeys,
         stealthMetaAddressHex,
@@ -161,7 +154,6 @@ export function GhostAnnounceModal({
     }
   }, [
     canStart,
-    publicClient,
     wasm,
     getMasterKeys,
     stealthMetaAddressHex,

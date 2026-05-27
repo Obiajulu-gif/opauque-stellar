@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * IssueTraitModal — Issue a stealth attestation trait to any recipient.
  *
@@ -8,12 +7,11 @@
  */
 
 import { useState, useCallback } from "react";
-import { Connection, Transaction } from "../lib/legacyTxShim";
-import { useWallet } from "../lib/legacyWalletCompat";
-import { getCluster, getRpcUrl } from "../lib/chain";
+import { useWallet } from "../hooks/useWallet";
+import { getCluster } from "../lib/chain";
 import { getExplorerTxUrl } from "../lib/explorer";
 import { computeStealthAddressAndViewTag } from "../lib/stealth";
-import { buildAnnounceInstruction, SCHEME_ID_SECP256K1 } from "../lib/contracts";
+import { announceStealthTransfer, SCHEME_ID_SECP256K1 } from "../lib/contracts";
 import { getConfigForCluster } from "../contracts/contract-config";
 import { KNOWN_TRAITS } from "../lib/reputation";
 import { ModalShell } from "./ModalShell";
@@ -39,7 +37,7 @@ function encodeAttestationMetadata(viewTag: number, attestationId: number): Uint
 }
 
 export function IssueTraitModal({ onClose }: IssueTraitModalProps) {
-  const { publicKey, sendTransaction } = useWallet();
+  const { publicKey, signTransaction } = useWallet();
   const cluster = getCluster();
   const pushTx = useTxHistoryStore((s) => s.push);
   const [step, setStep] = useState<IssueStep>("form");
@@ -79,20 +77,14 @@ export function IssueTraitModal({ onClose }: IssueTraitModalProps) {
       const stealthAddrBytes = Uint8Array.from(
         Buffer.from(stealthAddress.replace(/^0x/i, ""), "hex")
       );
-      const instruction = buildAnnounceInstruction(
-        publicKey,
-        SCHEME_ID_SECP256K1,
-        stealthAddrBytes,
+      const sig = await announceStealthTransfer({
+        sourcePublicKey: publicKey,
+        schemeId: SCHEME_ID_SECP256K1,
+        stealthAddress: stealthAddrBytes,
         ephemeralPubKey,
         metadata,
-      );
-
-      const connection = new Connection(getRpcUrl(), "confirmed");
-      const tx = new Transaction().add(instruction);
-      tx.feePayer = publicKey;
-      tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
+        signTransaction,
+      });
 
       const traitLabel = useCustom
         ? (customLabel.trim() || `Trait #${attestationId}`)
@@ -118,7 +110,7 @@ export function IssueTraitModal({ onClose }: IssueTraitModalProps) {
       setError(err instanceof Error ? err.message : "Transaction failed");
       setStep("error");
     }
-  }, [canSubmit, cluster, recipientMeta, attestationId, pushTx, publicKey, sendTransaction, useCustom, customLabel, selectedTrait]);
+  }, [canSubmit, cluster, recipientMeta, attestationId, pushTx, publicKey, signTransaction, useCustom, customLabel, selectedTrait]);
 
   return (
     <ModalShell

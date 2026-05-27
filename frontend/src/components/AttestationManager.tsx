@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Attestation Manager — V2 Issue Attestation UI
  *
@@ -8,7 +7,6 @@
  */
 
 import { useEffect, useMemo, useState, useId } from "react";
-import { PublicKey, Transaction } from "../lib/legacyTxShim";
 import type { Tab } from "./Layout";
 import { keccak_256 } from "@noble/hashes/sha3";
 import { useWallet } from "../hooks/useWallet";
@@ -16,18 +14,14 @@ import { useSchemaStore } from "../store/schemaStore";
 import { useTxHistoryStore } from "../store/txHistoryStore";
 import { getCluster } from "../lib/chain";
 import { getExplorerTxUrl } from "../lib/explorer";
-import { parseFieldDefs, SCHEMA_REGISTRY_PROGRAM_ID } from "../lib/schema";
+import { parseFieldDefs } from "../lib/schema";
 import { encodeAttestationData } from "../lib/attestationV2";
 import { computeStealthAddressAndViewTag } from "../lib/stealth";
 import {
-  buildAttestInstruction,
-  buildAnnounceInstruction,
-  bytesToHex,
-  fetchAllSchemas,
   hexToBytes,
-  fetchAttestationPDA,
+  invokeAttest,
 } from "../lib/programs";
-import { deriveAttestationPDA } from "../lib/attestationV2";
+import { announceStealthTransfer, SCHEME_ID_SECP256K1 } from "../lib/contracts";
 
 // =============================================================================
 // Component
@@ -38,11 +32,9 @@ interface AttestationManagerProps {
 }
 
 export function AttestationManager({ onNavigate }: AttestationManagerProps = {}) {
-  const { address: walletAddress, publicKey, sendTransaction, connection } = useWallet();
-  const setSchemas = useSchemaStore((s) => s.setSchemas);
+  const { address: walletAddress, publicKey, signTransaction, connection } = useWallet();
   const pushTx = useTxHistoryStore((s) => s.push);
   const cluster = getCluster();
-  const setIsFetchingSchemas = useSchemaStore((s) => s.setIsFetchingSchemas);
   const isFetchingSchemas = useSchemaStore((s) => s.isFetchingSchemas);
   const schemaMap = useSchemaStore((s) => s.schemas);
   const schemas = useMemo(() => {
@@ -65,49 +57,6 @@ export function AttestationManager({ onNavigate }: AttestationManagerProps = {})
   const [resolvedStealthAddress, setResolvedStealthAddress] = useState<string | null>(null);
 
   const uid = useId();
-
-  useEffect(() => {
-    if (!walletAddress) return;
-
-    let cancelled = false;
-    (async () => {
-      try {
-        setIsFetchingSchemas(true);
-        const onChainSchemas = await fetchAllSchemas(connection);
-        if (cancelled) return;
-
-        setSchemas(
-          onChainSchemas.map(({ address, schema }) => ({
-            address: address.toBase58(),
-            schemaId: bytesToHex(schema.schemaId),
-            authority: schema.authority.toBase58(),
-            resolver:
-              schema.resolver.equals(PublicKey.default) ? "" : schema.resolver.toBase58(),
-            revocable: schema.revocable,
-            name: schema.name,
-            fieldDefinitions: schema.fieldDefinitions,
-            version: schema.version,
-            delegates: schema.delegates.map((d) => d.toBase58()),
-            createdAt: Number(schema.createdAt),
-            schemaExpirySlot: Number(schema.schemaExpirySlot),
-            deprecated: schema.deprecated,
-          }))
-        );
-      } catch (e) {
-        if (!cancelled) {
-          setError(e instanceof Error ? e.message : "Failed to load schemas from chain");
-        }
-      } finally {
-        if (!cancelled) {
-          setIsFetchingSchemas(false);
-        }
-      }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [walletAddress, connection, setSchemas, setIsFetchingSchemas]);
 
   useEffect(() => {
     if (!selectedSchemaId) return;
@@ -177,17 +126,6 @@ export function AttestationManager({ onNavigate }: AttestationManagerProps = {})
 
       const schemaIdBytes = hexToBytes(selectedSchema.schemaId);
 
-      // Derive the SchemaPDA address from authority + schemaId
-      const schemaAuthority = new PublicKey(selectedSchema.authority);
-      const [schemaPda] = PublicKey.findProgramAddressSync(
-        [
-          Buffer.from("schema"),
-          schemaAuthority.toBuffer(),
-          Buffer.from(schemaIdBytes),
-        ],
-        SCHEMA_REGISTRY_PROGRAM_ID
-      );
-
       const { stealthHashBytes, stealthAddressHex, ephemeralPubKey, viewTag } = resolveStealthAddressHash(recipientInput);
       setResolvedStealthAddress(stealthAddressHex ?? null);
 
@@ -209,88 +147,37 @@ export function AttestationManager({ onNavigate }: AttestationManagerProps = {})
         if (targetMs <= nowMs) {
           throw new Error("Expiration date/time must be in the future.");
         }
-        const currentSlot = await connection.getSlot("confirmed");
+        const currentSlot = await connection.getSlot();
         const slotsUntilExpiry = Math.ceil((targetMs - nowMs) / 400); // ~400ms per slot
         expirySlotNum = currentSlot + Math.max(1, slotsUntilExpiry);
       }
       const refUid = new Uint8Array(32);
 
-      const [attestationPda] = await deriveAttestationPDA(
-        schemaIdBytes,
+      const signature = await invokeAttest({
         issuer,
-        stealthHashBytes
-      );
-
-      const resolverStr = selectedSchema.resolver;
-      const resolverPk =
-        resolverStr && resolverStr !== "" && resolverStr !== PublicKey.default.toBase58()
-          ? new PublicKey(resolverStr)
-          : undefined;
-
-      const ix = buildAttestInstruction(
-        issuer,
-        schemaPda,
-        attestationPda,
-        stealthHashBytes,
-        attestationData,
-        expirySlotNum,
+        schemaId: schemaIdBytes,
+        stealthAddressHash: stealthHashBytes,
+        data: attestationData,
+        expirationLedger: expirySlotNum,
         refUid,
-        resolverPk
-      );
-
-      const tx = new Transaction().add(ix);
-      tx.feePayer = issuer;
-      const latest = await connection.getLatestBlockhash("confirmed");
-      tx.recentBlockhash = latest.blockhash;
-
-      const sim = await connection.simulateTransaction(tx);
-      if (sim.value.err) {
-        const logs = sim.value.logs?.join("\n") ?? "No simulation logs";
-        throw new Error(`Attestation simulation failed: ${JSON.stringify(sim.value.err)}\n${logs}`);
-      }
-
-      const signature = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(signature, "confirmed");
+        signTransaction,
+      });
 
       // If we derived the stealth address from a meta-address, we have the ephemeral key
       // and can create an announcement so the recipient's scanner can discover this attestation.
       if (ephemeralPubKey && stealthAddressHex && viewTag !== undefined) {
         try {
-          // Fetch the confirmed attestation PDA to get the on-chain UID.
-          const confirmedAttestation = await fetchAttestationPDA(connection, attestationPda);
-          if (confirmedAttestation) {
-            // Build V2 metadata: viewTag || 0xB2 || schemaId(32) || issuer(32) || uid(32) || nonce(32)
-            const schemaId32 = new Uint8Array(32);
-            schemaId32.set(schemaIdBytes.slice(0, Math.min(32, schemaIdBytes.length)));
-
-            const issuerBytes = issuer.toBytes(); // 32-byte Ed25519 pubkey
-            const nonce = crypto.getRandomValues(new Uint8Array(32));
-
-            const v2Metadata = new Uint8Array(130);
-            v2Metadata[0] = viewTag;
-            v2Metadata[1] = 0xB2; // V2 attestation marker
-            v2Metadata.set(schemaId32, 2);
-            v2Metadata.set(issuerBytes, 34);
-            v2Metadata.set(confirmedAttestation.uid, 66);
-            v2Metadata.set(nonce, 98);
-
-            const stealthAddressBytes = hexToBytes(stealthAddressHex);
-            const announceIx = buildAnnounceInstruction(
-              issuer,
-              1, // schemeId: 1 = secp256k1 with view tags
-              stealthAddressBytes,
-              ephemeralPubKey,
-              v2Metadata
-            );
-
-            const announceTx = new Transaction().add(announceIx);
-            announceTx.feePayer = issuer;
-            const latestForAnnounce = await connection.getLatestBlockhash("confirmed");
-            announceTx.recentBlockhash = latestForAnnounce.blockhash;
-
-            const announceSig = await sendTransaction(announceTx, connection);
-            await connection.confirmTransaction(announceSig, "confirmed");
-          }
+          const metadata = new Uint8Array(2);
+          metadata[0] = viewTag;
+          metadata[1] = 0xB2;
+          await announceStealthTransfer({
+            sourcePublicKey: issuer,
+            schemeId: SCHEME_ID_SECP256K1,
+            stealthAddress: hexToBytes(stealthAddressHex),
+            ephemeralPubKey,
+            metadata,
+            signTransaction,
+          });
         } catch (announceErr) {
           // Announcement failure is non-fatal — attestation is still on-chain.
           // The recipient can still discover it if they have the stealth address stored.

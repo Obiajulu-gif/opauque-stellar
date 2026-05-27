@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * My Traits — V2 User Self-Service UI
  *
@@ -21,16 +20,9 @@ import { getConfigForCluster } from "../contracts/contract-config";
 import { getAnnouncementsForCluster } from "../lib/opaqueCache";
 import type { Tab } from "./Layout";
 import {
-  fetchAllSchemas,
-  fetchAllAttestations,
-  bytesToHex,
   hexToBytes,
   hexPubkeyToBase58,
 } from "../lib/programs";
-import { keccak_256 } from "@noble/hashes/sha3";
-import { useGhostAddressStore } from "../store/ghostAddressStore";
-import { useVaultStore } from "../store/vaultStore";
-import { useWatchlistStore } from "../hooks/useWatchlist";
 import { ProofGeneratorModal } from "./ProofGeneratorModal";
 
 // =============================================================================
@@ -83,37 +75,6 @@ function PaginationControls({
 // =============================================================================
 // Status badge
 // =============================================================================
-
-function normalizeStealthAddressHex(addr: string): string {
-  const t = addr.trim().toLowerCase();
-  return t.startsWith("0x") ? t : `0x${t}`;
-}
-
-/** keccak256(20-byte stealth), lowercase 0x-prefixed hex — must match AttestationManager + on-chain account. */
-function stealthHashHexFromAddress(stealthHex: string): string | null {
-  try {
-    const norm = normalizeStealthAddressHex(stealthHex);
-    const b = hexToBytes(norm);
-    if (b.length !== 20) return null;
-    return bytesToHex(keccak_256(b)).toLowerCase();
-  } catch {
-    return null;
-  }
-}
-
-function findOwnedStealthForHash(
-  ownedNormalized: Set<string>,
-  stealthAddressHash: Uint8Array
-): string | null {
-  const want = bytesToHex(stealthAddressHash).toLowerCase();
-  for (const stealthNorm of ownedNormalized) {
-    const calculated = stealthHashHexFromAddress(stealthNorm);
-    if (calculated === want) {
-      return stealthNorm;
-    }
-  }
-  return null;
-}
 
 function StatusBadge({ isValid, isLegacy }: { isValid: boolean; isLegacy?: boolean }) {
   if (isLegacy) {
@@ -220,6 +181,7 @@ interface MyTraitsViewProps {
 
 export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
   const discoveredTraitsMap = useSchemaStore((s) => s.discoveredTraits);
+  const schemaMap = useSchemaStore((s) => s.schemas);
   const setDiscoveredTraits = useSchemaStore((s) => s.setDiscoveredTraits);
   const isScanning = useSchemaStore((s) => s.isScanning);
   const setIsScanning = useSchemaStore((s) => s.setIsScanning);
@@ -233,7 +195,7 @@ export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
   const scanner = useScanner({
     cluster,
     publicClient: connection,
-    announcerAddress: currentConfig?.announcerProgram.toBase58() ?? null,
+    announcerAddress: currentConfig?.announcerProgram ?? null,
     enabled: Boolean(cluster && currentConfig),
   });
   const { refresh: refreshScanner } = scanner;
@@ -283,28 +245,10 @@ export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
       await refreshScanner();
 
       const [currentSlot, announcements] = await Promise.all([
-        connection.getSlot("confirmed"),
+        connection.getSlot(),
         getAnnouncementsForCluster(cluster),
       ]);
-      const [schemaRows, attestationRows] = await Promise.all([
-        fetchAllSchemas(connection),
-        fetchAllAttestations(connection),
-      ]);
-
-      const ownedStealthNormalized = new Set<string>();
-      for (const e of useGhostAddressStore.getState().getForCluster(cluster)) {
-        const h = stealthHashHexFromAddress(e.stealthAddress);
-        if (h) ownedStealthNormalized.add(normalizeStealthAddressHex(e.stealthAddress));
-      }
-      for (const e of useWatchlistStore.getState().getEntriesForCluster(cluster)) {
-        const h = stealthHashHexFromAddress(e.address);
-        if (h) ownedStealthNormalized.add(normalizeStealthAddressHex(e.address));
-      }
-      for (const e of useVaultStore.getState().entries) {
-        if (stealthHashHexFromAddress(e.stealthAddress)) {
-          ownedStealthNormalized.add(normalizeStealthAddressHex(e.stealthAddress));
-        }
-      }
+      const schemaRows = Object.values(schemaMap);
 
       let mapped: V2DiscoveredTrait[] = [];
       if (isSetup && wasmReady && wasm) {
@@ -318,10 +262,10 @@ export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
           blockNumber: a.slot,
         }));
 
-        const schemasPayload = schemaRows.map(({ schema }) => ({
-          schema_id: Array.from(schema.schemaId),
-          authority: Array.from(schema.authority.toBytes()),
-          delegates: schema.delegates.map((d) => Array.from(d.toBytes())),
+        const schemasPayload = schemaRows.map((schema) => ({
+          schema_id: Array.from(hexToBytes(schema.schemaId)),
+          authority: schema.authority,
+          delegates: schema.delegates,
           deprecated: schema.deprecated,
           schema_expiry_slot: Number(schema.schemaExpirySlot),
           name: schema.name,
@@ -381,68 +325,11 @@ export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
           isV2: true,
         }));
 
-        for (const t of mapped) {
-          const h = stealthHashHexFromAddress(t.stealthAddress);
-          if (h) ownedStealthNormalized.add(normalizeStealthAddressHex(t.stealthAddress));
-        }
-      }
-
-      const schemaByIdBytes = new Map<string, (typeof schemaRows)[0]["schema"]>();
-      for (const row of schemaRows) {
-        schemaByIdBytes.set(Buffer.from(row.schema.schemaId).toString("hex"), row.schema);
-      }
-
-      const chainTraits: V2DiscoveredTrait[] = [];
-      const slotBn = BigInt(currentSlot);
-      for (const { attestation } of attestationRows) {
-        const stealthHex = findOwnedStealthForHash(
-          ownedStealthNormalized,
-          attestation.stealthAddressHash
-        );
-        if (!stealthHex) continue;
-
-        const schema =
-          schemaByIdBytes.get(Buffer.from(attestation.schemaId).toString("hex")) ?? null;
-        const issuerAuthorized =
-          schema != null &&
-          (schema.authority.equals(attestation.issuer) ||
-            schema.delegates.some((d) => d.equals(attestation.issuer)));
-
-        const isValid =
-          attestation.revocationSlot === 0n &&
-          (attestation.expirationSlot === 0n || slotBn < attestation.expirationSlot);
-
-        chainTraits.push({
-          stealthAddress: stealthHex,
-          schemaId: bytesToHex(attestation.schemaId),
-          schemaName: schema?.name ?? "Unknown Schema",
-          issuer: attestation.issuer.toBase58(),
-          attestationUid: bytesToHex(attestation.uid),
-          dataHex: bytesToHex(attestation.data),
-          nonce: bytesToHex(attestation.refUid),
-          merkleLeafPreimage: {
-            stealthPkField: "0",
-            schemaIdField: "0",
-            issuerPkX: "0",
-            traitDataHash: "0",
-            nonceField: "0",
-          },
-          txHash: "",
-          slot: Number(attestation.createdAt),
-          isValid,
-          issuerAuthorized,
-          isV2: true,
-          chainDiscoveryOnly: true,
-        });
       }
 
       const mergedByUid = new Map<string, V2DiscoveredTrait>();
       for (const t of mapped) {
         mergedByUid.set(t.attestationUid.toLowerCase(), t);
-      }
-      for (const t of chainTraits) {
-        const k = t.attestationUid.toLowerCase();
-        if (!mergedByUid.has(k)) mergedByUid.set(k, t);
       }
 
       setDiscoveredTraits(Array.from(mergedByUid.values()));
@@ -463,6 +350,7 @@ export function MyTraitsView({ onNavigate }: MyTraitsViewProps = {}) {
     setIsScanning,
     connection,
     getMasterKeys,
+    schemaMap,
   ]);
 
   useEffect(() => {

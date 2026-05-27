@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * useScanner — IndexedDB-backed announcement scanner.
  * - Primary: single GraphQL fetch to Subgraph (latest 1000 announcements). No getLogs in this path.
@@ -25,7 +24,10 @@ import {
 } from "../lib/syncErrorUtils";
 import { getStoredGhostEntries } from "../store/ghostAddressStore";
 
-type PublicClient = { getSlot: () => Promise<number> } | null;
+type PublicClient = {
+  getSlot: () => Promise<number>;
+  getBalance: (address: string) => Promise<bigint>;
+} | null;
 
 export type ScanProgress = {
   phase: "idle" | "loading-cache" | "indexer-fetch" | "indexer-fetched" | "syncing" | "backfilling" | "matching" | "done" | "error";
@@ -87,87 +89,20 @@ async function fetchFromSubgraph(
 }
 
 async function fetchLogsAdaptive(
-  publicClient: PublicClient,
-  announcerAddress: string,
+  _publicClient: PublicClient,
+  _announcerAddress: string,
   fromBlock: bigint,
-  toBlock: bigint,
+  _toBlock: bigint,
   _cluster: StellarNetwork,
   onChunk: (from: bigint, to: bigint, logs: unknown[]) => Promise<void>
 ): Promise<void> {
-  const programId = new PublicKey(announcerAddress);
-  const signatures = await publicClient.getSignaturesForAddress(programId, { limit: 1000 }, "confirmed");
-  const inRange = signatures
-    .filter((s) => BigInt(s.slot) >= fromBlock && BigInt(s.slot) <= toBlock)
-    .sort((a, b) => a.slot - b.slot);
-
-  const batchSize = 100;
-  for (let i = 0; i < inRange.length; i += batchSize) {
-    const batch = inRange.slice(i, i + batchSize);
-    const logsOut: Array<{
-      transactionSignature: string;
-      logIndex: number;
-      slot: number;
-      args: { stealthAddress?: string; ephemeralPubKey?: string; metadata?: string };
-    }> = [];
-
-    for (const sig of batch) {
-      const tx = await publicClient.getTransaction(sig.signature, {
-        commitment: "confirmed",
-        maxSupportedTransactionVersion: 0,
-      });
-      const logMessages = tx?.meta?.logMessages ?? [];
-      let localLogIndex = 0;
-      for (const log of logMessages) {
-        if (!log.startsWith("Program data: ")) continue;
-        try {
-          const b64Data = log.slice("Program data: ".length);
-          const eventData = Buffer.from(b64Data, "base64");
-          if (eventData.length < 8) continue;
-          let offset = 8;
-          const schemeId = eventData.readBigUInt64LE(offset);
-          offset += 8;
-          if (schemeId !== 1n) continue;
-
-          const stealthAddrLen = eventData.readUInt32LE(offset);
-          offset += 4;
-          const stealthAddrBytes = eventData.slice(offset, offset + stealthAddrLen);
-          offset += stealthAddrLen;
-
-          // caller pubkey
-          offset += 32;
-
-          const ephKeyLen = eventData.readUInt32LE(offset);
-          offset += 4;
-          const ephKeyBytes = eventData.slice(offset, offset + ephKeyLen);
-          offset += ephKeyLen;
-
-          const metaLen = eventData.readUInt32LE(offset);
-          offset += 4;
-          const metadataBytes = eventData.slice(offset, offset + metaLen);
-
-          logsOut.push({
-            transactionSignature: sig.signature,
-            logIndex: localLogIndex++,
-            slot: sig.slot,
-            args: {
-              stealthAddress: `0x${Buffer.from(stealthAddrBytes).toString("hex")}`,
-              ephemeralPubKey: `0x${Buffer.from(ephKeyBytes).toString("hex")}`,
-              metadata: `0x${Buffer.from(metadataBytes).toString("hex")}`,
-            },
-          });
-        } catch {
-          // ignore malformed event rows
-        }
-      }
-    }
-
-    const endSlot = batch.length > 0 ? BigInt(batch[batch.length - 1].slot) : fromBlock;
-    await onChunk(fromBlock, endSlot, logsOut);
-  }
+  // Stellar event backfill needs a Soroban event indexer. The old implementation
+  // used Solana transaction-log APIs and returned stubbed data through legacyTxShim.
+  await onChunk(fromBlock, fromBlock, []);
 }
 
 async function checkWatchlistBalances(
-  connection: Connection,
+  connection: NonNullable<PublicClient>,
   watchlist: string[],
 ): Promise<WatchlistBalances> {
   const eth: Record<string, bigint> = {};
@@ -175,8 +110,7 @@ async function checkWatchlistBalances(
   for (const addr of watchlist) {
     tokensOut[addr] = {};
     try {
-      const pk = new PublicKey(addr);
-      eth[addr] = BigInt(await connection.getBalance(pk));
+      eth[addr] = await connection.getBalance(addr);
     } catch {
       eth[addr] = 0n;
     }
@@ -506,11 +440,10 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
           setGhostBalances(eth);
           setGhostTokenBalances(tokens);
         } else {
-          const conn = publicClient as Connection;
           const results = await Promise.all(
             addressesToPoll.map(async (addr) => {
               try {
-                return BigInt(await conn.getBalance(new PublicKey(addr)));
+                return await publicClient.getBalance(addr);
               } catch {
                 return 0n;
               }

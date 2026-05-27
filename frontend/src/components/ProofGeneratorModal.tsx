@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * Proof Generator Modal — V2
  *
@@ -8,10 +7,9 @@
  */
 
 import { useState } from "react";
-import { Transaction } from "../lib/legacyTxShim";
 import type { V2DiscoveredTrait } from "../store/schemaStore";
 import { useWallet } from "../hooks/useWallet";
-import { buildVerifyProofV2Instruction, hexToBytes, hexPubkeyToBase58 } from "../lib/programs";
+import { invokeVerifyProofV2, hexToBytes, hexPubkeyToBase58 } from "../lib/programs";
 import { useOpaqueWasm } from "../hooks/useOpaqueWasm";
 import { useKeys } from "../context/KeysContext";
 import { getAnnouncementsForCluster } from "../lib/opaqueCache";
@@ -176,7 +174,7 @@ interface ProofGeneratorModalProps {
 }
 
 export function ProofGeneratorModal({ trait, onClose }: ProofGeneratorModalProps) {
-  const { publicKey, sendTransaction, connection } = useWallet();
+  const { publicKey, signTransaction } = useWallet();
   const { wasm, isReady: wasmReady } = useOpaqueWasm();
   const { isSetup, getMasterKeys } = useKeys();
   const [step, setStep] = useState<ProofStep>("setup");
@@ -329,25 +327,23 @@ export function ProofGeneratorModal({ trait, onClose }: ProofGeneratorModalProps
         stringToBigInt(proof.publicSignals[3])
       );
 
-      const ix = buildVerifyProofV2Instruction(
-        publicKey,
+      const signature = await invokeVerifyProofV2({
+        caller: publicKey,
         proofA,
         proofB,
         proofC,
         merkleRoot,
         attestationId,
-        extNullifier,
-        nullifierHash
-      );
-
-      const tx = new Transaction().add(ix);
-      const signature = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(signature, "confirmed");
+        externalNullifier: extNullifier,
+        nullifierHash,
+        signTransaction,
+      });
 
       setTxSig(signature);
       setStep("verified");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "On-chain verification failed");
+      const details = e instanceof Error ? e.message : "On-chain verification failed";
+      setError(`Soroban proof verification failed: ${details}`);
       setStep("error");
     }
   };

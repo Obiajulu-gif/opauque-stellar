@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * ManageView — Schema & Attestation Management
  *
@@ -12,19 +11,12 @@
  */
 
 import { useEffect, useMemo, useState, useCallback, useId } from "react";
-import { PublicKey, Transaction } from "../lib/legacyTxShim";
 import { useWallet } from "../hooks/useWallet";
 import { useSchemaStore } from "../store/schemaStore";
 import type { SchemaV2 } from "../lib/schema";
 import {
-  fetchAllSchemas,
-  fetchAllAttestations,
   bytesToHex,
   hexPubkeyToBase58,
-  buildDeprecateSchemaInstruction,
-  buildAddDelegateInstruction,
-  buildRemoveDelegateInstruction,
-  buildRevokeInstruction,
 } from "../lib/programs";
 import type { Tab } from "./Layout";
 import { ModalShell } from "./ModalShell";
@@ -40,10 +32,10 @@ const ITEMS_PER_PAGE = 10;
 // =============================================================================
 
 interface ManagedAttestation {
-  address: PublicKey;
+  address: string;
   uid: Uint8Array;
   uidHex: string;
-  schemaPda: PublicKey;
+  schemaPda: string;
   schemaId: Uint8Array;
   schemaIdHex: string;
   schemaName: string;
@@ -136,70 +128,33 @@ interface SchemaCardProps {
 }
 
 function SchemaCard({ schema, onAction }: SchemaCardProps) {
-  const { publicKey, sendTransaction, connection } = useWallet();
-  const setSchemas = useSchemaStore((s) => s.setSchemas);
   const uid = useId();
 
   const [delegateInput, setDelegateInput] = useState("");
   const [busy, setBusy] = useState<string | null>(null); // action label currently running
   const [confirmDeprecateOpen, setConfirmDeprecateOpen] = useState(false);
 
-  const schemaPda = useMemo(() => {
-    try { return new PublicKey(schema.address); } catch { return null; }
-  }, [schema.address]);
-
-  const runTx = useCallback(async (label: string, buildIx: () => ReturnType<typeof buildDeprecateSchemaInstruction>) => {
-    if (!publicKey || !schemaPda) return;
+  const runUnavailableAction = useCallback(async (label: string) => {
     setBusy(label);
     try {
-      const ix = buildIx();
-      const tx = new Transaction().add(ix);
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
-
-      // Refresh schema store
-      const updated = await fetchAllSchemas(connection);
-      setSchemas(updated.map(({ address, schema: s }) => ({
-        address: address.toBase58(),
-        schemaId: bytesToHex(s.schemaId),
-        authority: s.authority.toBase58(),
-        resolver: s.resolver.equals(PublicKey.default) ? "" : s.resolver.toBase58(),
-        revocable: s.revocable,
-        name: s.name,
-        fieldDefinitions: s.fieldDefinitions,
-        version: s.version,
-        delegates: s.delegates.map((d) => d.toBase58()),
-        createdAt: Number(s.createdAt),
-        schemaExpirySlot: Number(s.schemaExpirySlot),
-        deprecated: s.deprecated,
-      })));
-
-      onAction(`${label} successful`);
+      throw new Error(`${label} is not available until the Stellar management contract methods are wired.`);
     } catch (e) {
       onAction(e instanceof Error ? e.message : `${label} failed`, true);
     } finally {
       setBusy(null);
       setDelegateInput("");
     }
-  }, [publicKey, schemaPda, sendTransaction, connection, setSchemas, onAction]);
+  }, [onAction]);
 
-  const handleDeprecate = () => runTx("Deprecate", () =>
-    buildDeprecateSchemaInstruction(publicKey!, schemaPda!)
-  );
+  const handleDeprecate = () => runUnavailableAction("Deprecate schema");
 
   const handleAddDelegate = () => {
     if (!delegateInput.trim()) return;
-    let delegatePk: PublicKey;
-    try { delegatePk = new PublicKey(delegateInput.trim()); }
-    catch { onAction("Invalid delegate address", true); return; }
-    runTx("Add delegate", () => buildAddDelegateInstruction(publicKey!, schemaPda!, delegatePk));
+    void runUnavailableAction("Add delegate");
   };
 
-  const handleRemoveDelegate = (delegateAddr: string) => {
-    let delegatePk: PublicKey;
-    try { delegatePk = new PublicKey(delegateAddr); }
-    catch { return; }
-    runTx("Remove delegate", () => buildRemoveDelegateInstruction(publicKey!, schemaPda!, delegatePk));
+  const handleRemoveDelegate = (_delegateAddr: string) => {
+    void runUnavailableAction("Remove delegate");
   };
 
   const isBusy = busy !== null;
@@ -338,19 +293,13 @@ interface AttestationCardProps {
 }
 
 function AttestationCard({ att, onAction }: AttestationCardProps) {
-  const { publicKey, sendTransaction, connection } = useWallet();
   const [revoking, setRevoking] = useState(false);
   const [confirmRevokeOpen, setConfirmRevokeOpen] = useState(false);
 
   const handleRevoke = async () => {
-    if (!publicKey) return;
     setRevoking(true);
     try {
-      const ix = buildRevokeInstruction(publicKey, att.schemaPda, att.address, att.uid);
-      const tx = new Transaction().add(ix);
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
-      onAction("Attestation revoked");
+      throw new Error("Revocation is not available until the Stellar management contract method is wired.");
     } catch (e: unknown) {
       const msg =
         (e as { logs?: string[] })?.logs?.find((l: string) => l.includes("Error"))
@@ -460,7 +409,6 @@ interface ManageViewProps {
 export function ManageView({ onNavigate }: ManageViewProps = {}) {
   const { address: walletAddress, publicKey, connection } = useWallet();
   const schemaMap = useSchemaStore((s) => s.schemas);
-  const setSchemas = useSchemaStore((s) => s.setSchemas);
 
   const [attestations, setAttestations] = useState<ManagedAttestation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -513,61 +461,30 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     setLoading(true);
     try {
       const [slot, schemaRows, attestationRows] = await Promise.all([
-        connection.getSlot("confirmed"),
-        fetchAllSchemas(connection),
-        fetchAllAttestations(connection),
+        connection.getSlot(),
+        Promise.resolve(Object.values(schemaMap)),
+        Promise.resolve([] as ManagedAttestation[]),
       ]);
 
-      setSchemas(schemaRows.map(({ address, schema: s }) => ({
-        address: address.toBase58(),
-        schemaId: bytesToHex(s.schemaId),
-        authority: s.authority.toBase58(),
-        resolver: s.resolver.equals(PublicKey.default) ? "" : s.resolver.toBase58(),
-        revocable: s.revocable,
-        name: s.name,
-        fieldDefinitions: s.fieldDefinitions,
-        version: s.version,
-        delegates: s.delegates.map((d) => d.toBase58()),
-        createdAt: Number(s.createdAt),
-        schemaExpirySlot: Number(s.schemaExpirySlot),
-        deprecated: s.deprecated,
-      })));
-
       // Build schema lookup for attestation labels
-      const schemaHexMap = new Map<string, { name: string; revocable: boolean; schemaPda: PublicKey }>();
-      for (const { address, schema: s } of schemaRows) {
+      const schemaHexMap = new Map<string, { name: string; revocable: boolean; schemaPda: string }>();
+      for (const s of schemaRows) {
         schemaHexMap.set(
-          Array.from(s.schemaId).map((b) => b.toString(16).padStart(2, "0")).join("").toLowerCase(),
-          { name: s.name, revocable: s.revocable, schemaPda: address }
+          s.schemaId.replace(/^0x/, "").toLowerCase(),
+          { name: s.name, revocable: s.revocable, schemaPda: s.address }
         );
       }
 
       const slotBn = BigInt(slot);
       const mine: ManagedAttestation[] = attestationRows
-        .filter(({ attestation }) => attestation.issuer.equals(publicKey))
-        .map(({ address, attestation }) => {
-          const sidHex = Array.from(attestation.schemaId).map((b) => b.toString(16).padStart(2, "0")).join("").toLowerCase();
+        .map((attestation) => {
+          const sidHex = attestation.schemaIdHex.replace(/^0x/, "").toLowerCase();
           const schemaInfo = schemaHexMap.get(sidHex);
-          const isRevoked = attestation.revocationSlot > 0n;
-          const isExpired = attestation.expirationSlot > 0n && slotBn >= attestation.expirationSlot;
-          return {
-            address,
-            uid: attestation.uid,
-            uidHex: bytesToHex(attestation.uid),
-            schemaPda: attestation.schemaPda,
-            schemaId: attestation.schemaId,
-            schemaIdHex: bytesToHex(attestation.schemaId),
-            schemaName: schemaInfo?.name ?? "Unknown Schema",
-            stealthAddressHash: attestation.stealthAddressHash,
-            createdAt: attestation.createdAt,
-            expirationSlot: attestation.expirationSlot,
-            revocationSlot: attestation.revocationSlot,
-            isRevoked,
-            isExpired,
-            isRevocable: schemaInfo?.revocable ?? false,
-          };
+          return { ...attestation, schemaName: schemaInfo?.name ?? attestation.schemaName };
         })
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); // newest first
+
+      void slotBn;
 
       setAttestations(mine);
     } catch (e) {
@@ -575,7 +492,7 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     } finally {
       setLoading(false);
     }
-  }, [publicKey, connection, setSchemas, showToast]);
+  }, [publicKey, connection, schemaMap, showToast]);
 
   useEffect(() => {
     void load();

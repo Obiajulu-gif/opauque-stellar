@@ -51,6 +51,11 @@ export function useWallet() {
           Math.round(parseFloat((native as { balance: string })?.balance ?? "0") * 1e7),
         );
       },
+      getSlot: async () => {
+        const ledgers = await getHorizonServer().ledgers().order("desc").limit(1).call();
+        const latest = ledgers.records[0];
+        return latest ? Number(latest.sequence) : 0;
+      },
     }),
     [],
   );

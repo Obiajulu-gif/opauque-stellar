@@ -10,9 +10,6 @@
 
 import { useEffect, useState } from 'react';
 
-// ES module import — Vite serves and processes this via the WASM plugins
-import init, * as wasmModule from '@wasm/cryptography.js';
-
 // Type definitions for WASM module exports
 export interface OpaqueWasmModule {
   derive_stealth_address_wasm: (
@@ -107,13 +104,17 @@ export function useOpaqueWasm(): UseOpaqueWasmReturn {
         setError(null);
         setWasm(null);
 
+        const loadedModule = await (Function('return import("/pkg/cryptography.js")')() as Promise<
+          Record<string, unknown> & { default: () => Promise<void> }
+        >);
+
         // Must call default (async init) before any Rust functions; loads .wasm into memory
-        await init();
+        await loadedModule.default();
 
         if (cancelled) return;
 
         console.log("✅ [Opaque] WASM binary initialized via Vite plugin");
-        setWasm(wasmModule as unknown as OpaqueWasmModule);
+        setWasm(loadedModule as unknown as OpaqueWasmModule);
         setLoading(false);
       } catch (err) {
         if (!cancelled) {

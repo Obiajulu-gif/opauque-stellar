@@ -1,4 +1,3 @@
-// @ts-nocheck
 /**
  * ReputationDashboardView — Displays discovered "Verified Traits" and lets
  * the user generate ZK proofs for selective disclosure.
@@ -9,9 +8,8 @@
  * generates a witness, and snarkjs creates the Groth16 proof in a background worker.
  */
 
-import { useState, useCallback, useEffect, useMemo } from "react";
-import { Connection } from "../lib/legacyTxShim";
-import { getCluster, getRpcUrl } from "../lib/chain";
+import { useState, useCallback, useEffect } from "react";
+import { getCluster } from "../lib/chain";
 import { useReputationStore } from "../store/reputationStore";
 import {
   KNOWN_TRAITS,
@@ -26,6 +24,7 @@ import { useOpaqueWasm } from "../hooks/useOpaqueWasm";
 import { useKeys } from "../context/KeysContext";
 import { getConfigForCluster } from "../contracts/contract-config";
 import { useScanner } from "../hooks/useScanner";
+import { useWallet } from "../hooks/useWallet";
 
 const ICONS: Record<string, string> = {
   code: "</> ",
@@ -62,14 +61,11 @@ export function ReputationDashboardView({ onBack }: ReputationDashboardViewProps
   const { isSetup, getMasterKeys } = useKeys();
   const cluster = getCluster();
   const currentConfig = getConfigForCluster(cluster);
-  const rpcUrl = getRpcUrl();
-  const connection = useMemo(() => {
-    return new Connection(rpcUrl, "confirmed");
-  }, [rpcUrl]);
+  const { connection } = useWallet();
   const scanner = useScanner({
     cluster,
     publicClient: connection,
-    announcerAddress: currentConfig?.announcerProgram.toBase58() ?? null,
+    announcerAddress: currentConfig?.announcerProgram ?? null,
     enabled: Boolean(wasmReady && cluster && currentConfig),
   });
 
