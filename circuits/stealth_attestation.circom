@@ -45,6 +45,9 @@ template StealthAttestation(TREE_DEPTH) {
     signal input merkle_path_indices[TREE_DEPTH];
 
     // --- Outputs ---
+    // Public signal order is canonical (see docs/PUBLIC_SIGNALS.md): outputs
+    // come first, so publicSignals = [nullifier, is_valid, merkle_root,
+    // attestation_id, external_nullifier]. Keep the verifier + frontend in sync.
     signal output nullifier;
     signal output is_valid;
 

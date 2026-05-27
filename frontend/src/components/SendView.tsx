@@ -1,10 +1,8 @@
 import { useState, useEffect, useMemo } from "react";
 import { motion } from "framer-motion";
 import {
-  Asset,
   BASE_FEE,
   Contract,
-  Operation,
   TransactionBuilder,
   nativeToScVal,
 } from "@stellar/stellar-sdk";
@@ -15,7 +13,7 @@ import { useKeys } from "../context/KeysContext";
 import { useWallet } from "../hooks/useWallet";
 import { getConfigForCluster } from "../contracts/contract-config";
 import { SCHEME_ID_SECP256K1 } from "../lib/contracts";
-import { bytesToScVal, getHorizonServer, getSorobanServer, parseXlmToStroops, u64ToScVal } from "../lib/stellar";
+import { bytesToScVal, buildNativeTransferOperation, getHorizonServer, getSorobanServer, parseXlmToStroops, u64ToScVal } from "../lib/stellar";
 import { deployedAddresses } from "../contracts/deployedAddresses";
 import { ProtocolStepper } from "./ProtocolStepper";
 import type { ProtocolStep } from "./ProtocolStepper";
@@ -152,17 +150,18 @@ export function SendView() {
       const source = await horizon.loadAccount(publicKey);
       const announcer = new Contract(deployedAddresses.stealthAnnouncer);
 
+      // Fresh stealth accounts don't exist yet, so create them on first send
+      // instead of issuing a plain payment that would fail.
+      const transferOp = await buildNativeTransferOperation({
+        destination: stealthStellarAddress,
+        amountStroops: value,
+      });
+
       let tx = new TransactionBuilder(source, {
         fee: BASE_FEE,
         networkPassphrase: passphrase,
       })
-        .addOperation(
-          Operation.payment({
-            destination: stealthStellarAddress,
-            asset: Asset.native(),
-            amount: (Number(value) / 1e7).toFixed(7),
-          }),
-        )
+        .addOperation(transferOp)
         .addOperation(
           announcer.call(
             "announce",

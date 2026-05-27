@@ -88,6 +88,42 @@ export function u64ToScVal(n: bigint | number): xdr.ScVal {
   return nativeToScVal(n, { type: "u64" });
 }
 
+/** Minimum starting balance (in stroops) for a freshly created Stellar account. */
+export const NEW_ACCOUNT_MIN_RESERVE_STROOPS = 10_000_000n; // 1 XLM
+
+/**
+ * Build a native-XLM transfer operation that is safe for both existing and
+ * brand-new destination accounts.
+ *
+ * Fresh stealth accounts do not exist on-ledger yet, so a plain
+ * `Operation.payment` would fail with `op_no_destination`. When the
+ * destination is unfunded we use `Operation.createAccount` with at least the
+ * minimum account reserve; otherwise we use a normal payment.
+ */
+export async function buildNativeTransferOperation(opts: {
+  destination: string;
+  amountStroops: bigint;
+}): Promise<xdr.Operation> {
+  const destExists = await accountExists(opts.destination);
+
+  if (!destExists) {
+    const createAmount =
+      opts.amountStroops > NEW_ACCOUNT_MIN_RESERVE_STROOPS
+        ? opts.amountStroops
+        : NEW_ACCOUNT_MIN_RESERVE_STROOPS;
+    return Operation.createAccount({
+      destination: opts.destination,
+      startingBalance: (Number(createAmount) / 1e7).toFixed(7),
+    });
+  }
+
+  return Operation.payment({
+    destination: opts.destination,
+    asset: Asset.native(),
+    amount: (Number(opts.amountStroops) / 1e7).toFixed(7),
+  });
+}
+
 export async function sendNativePayment(opts: {
   sourceKeypair: Keypair;
   destination: string;
@@ -97,32 +133,18 @@ export async function sendNativePayment(opts: {
   const horizon = getHorizonServer();
   const passphrase = getNetworkPassphrase();
   const sourceAccount = await horizon.loadAccount(opts.sourceKeypair.publicKey());
-  const destExists = await accountExists(opts.destination);
 
   const builder = new TransactionBuilder(sourceAccount, {
     fee: BASE_FEE,
     networkPassphrase: passphrase,
   });
 
-  if (!destExists) {
-    const minReserve = 10_000_000n; // 1 XLM in stroops
-    const createAmount =
-      opts.amountStroops > minReserve ? opts.amountStroops : minReserve;
-    builder.addOperation(
-      Operation.createAccount({
-        destination: opts.destination,
-        startingBalance: (Number(createAmount) / 1e7).toFixed(7),
-      }),
-    );
-  } else {
-    builder.addOperation(
-      Operation.payment({
-        destination: opts.destination,
-        asset: Asset.native(),
-        amount: (Number(opts.amountStroops) / 1e7).toFixed(7),
-      }),
-    );
-  }
+  builder.addOperation(
+    await buildNativeTransferOperation({
+      destination: opts.destination,
+      amountStroops: opts.amountStroops,
+    }),
+  );
 
   let tx = builder.setTimeout(180).build();
 

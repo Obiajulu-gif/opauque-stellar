@@ -121,6 +121,10 @@ export async function generateReputationProof(
 
   onProgress("generating-proof", 95);
 
+  // V1 public signal order (canonical — see docs/PUBLIC_SIGNALS.md):
+  //   [0] nullifier  [1] is_valid  [2] merkle_root  [3] attestation_id
+  //   [4] external_nullifier. Must match circuits/stealth_attestation.circom
+  //   and contracts/reputation-verifier.
   const nullifier = publicSignals[0];
   const attestationIdFromProof = Number(publicSignals[3]);
   const isValidSignal = String(publicSignals[1] ?? "0");
