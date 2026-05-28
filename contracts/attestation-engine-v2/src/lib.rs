@@ -48,6 +48,17 @@ fn registry_key(env: &Env) -> Symbol {
     Symbol::new(env, "config")
 }
 
+fn save_config(env: &Env, cfg: &GovernanceConfig) {
+    env.storage().instance().set(&registry_key(env), cfg);
+}
+
+fn emit_pause_event(env: &Env, action: &str, scope: &str) {
+    env.events().publish(
+        (Symbol::new(env, action),),
+        Symbol::new(env, scope),
+    );
+}
+
 #[contracttype]
 #[derive(Clone)]
 pub struct GovernanceConfig {
@@ -112,6 +123,28 @@ fn next_issuance_sequence(env: &Env, schema_id: &BytesN<32>, stealth_hash: &Byte
 
 #[contractimpl]
 impl AttestationEngineV2 {
+    /// Update mutable governance fields. Requires admin or governance auth.
+    pub fn update_config(
+        env: Env,
+        caller: Address,
+        schema_registry: Option<Address>,
+        version: Option<u32>,
+        upgrade_info: Option<Bytes>,
+    ) -> Result<(), AttestationError> {
+        caller.require_auth();
+        let mut cfg = load_config(&env)?;
+        Self::require_governance(&cfg, &caller)?;
+        if let Some(sr) = schema_registry {
+            cfg.schema_registry = sr;
+        }
+        if let Some(v) = version {
+            cfg.version = v;
+        }
+        cfg.upgrade_info = upgrade_info;
+        save_config(&env, &cfg);
+        Ok(())
+    }
+
     /// One-time initialiser. Stores the trusted schema registry address.
     /// Must be called before `attest` or `revoke_attestation`.
     pub fn initialize(
@@ -136,7 +169,7 @@ impl AttestationEngineV2 {
             paused_proof_verification: false,
             upgrade_info: None,
         };
-        env.storage().instance().set(&key, &cfg);
+        save_config(&env, &cfg);
         Ok(())
     }
 
@@ -274,7 +307,8 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_attestation = true;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Paused", "attestation");
         Ok(())
     }
 
@@ -283,7 +317,17 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_attestation = false;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Unpaused", "attestation");
+        Ok(())
+    }
+
+    /// Guard for callers: returns `Paused` when `paused_merkle_updates` is set.
+    /// Invoke at the top of any future Merkle-root-update entry point.
+    pub fn check_merkle_updates_active(env: Env) -> Result<(), AttestationError> {
+        if load_config(&env)?.paused_merkle_updates {
+            return Err(AttestationError::Paused);
+        }
         Ok(())
     }
 
@@ -292,7 +336,8 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_merkle_updates = true;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Paused", "merkle_upd");
         Ok(())
     }
 
@@ -301,7 +346,17 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_merkle_updates = false;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Unpaused", "merkle_upd");
+        Ok(())
+    }
+
+    /// Guard for callers: returns `Paused` when `paused_proof_verification` is set.
+    /// Invoke at the top of any future proof-verification entry point.
+    pub fn check_proof_verification_active(env: Env) -> Result<(), AttestationError> {
+        if load_config(&env)?.paused_proof_verification {
+            return Err(AttestationError::Paused);
+        }
         Ok(())
     }
 
@@ -310,7 +365,8 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_proof_verification = true;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Paused", "proof_verif");
         Ok(())
     }
 
@@ -319,7 +375,8 @@ impl AttestationEngineV2 {
         let mut cfg = load_config(&env)?;
         Self::require_governance(&cfg, &caller)?;
         cfg.paused_proof_verification = false;
-        env.storage().instance().set(&registry_key(&env), &cfg);
+        save_config(&env, &cfg);
+        emit_pause_event(&env, "Unpaused", "proof_verif");
         Ok(())
     }
 }
@@ -661,5 +718,84 @@ mod test {
         let stranger = Address::generate(&env);
         let result = engine_client.try_pause_attestation(&stranger);
         assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
+    }
+
+    #[test]
+    fn test_unpause_requires_governance_authority() {
+        let (env, authority, _engine_id, _schema_client, engine_client) = setup();
+        engine_client.pause_attestation(&authority);
+        let stranger = Address::generate(&env);
+        let result = engine_client.try_unpause_attestation(&stranger);
+        assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
+        // confirm still paused
+        assert!(engine_client.get_config().paused_attestation);
+    }
+
+    #[test]
+    fn test_merkle_updates_pause_round_trip() {
+        let (env, authority, _engine_id, _schema_client, engine_client) = setup();
+        // initially not paused
+        assert!(!engine_client.get_config().paused_merkle_updates);
+        // guard passes when unpaused
+        engine_client.check_merkle_updates_active();
+        // pause
+        engine_client.pause_merkle_updates(&authority);
+        assert!(engine_client.get_config().paused_merkle_updates);
+        // guard fails when paused
+        let result = engine_client.try_check_merkle_updates_active();
+        assert_eq!(result, Err(Ok(AttestationError::Paused)));
+        // stranger cannot unpause
+        let stranger = Address::generate(&env);
+        assert_eq!(
+            engine_client.try_unpause_merkle_updates(&stranger),
+            Err(Ok(AttestationError::Unauthorized))
+        );
+        // governance unpauses
+        engine_client.unpause_merkle_updates(&authority);
+        assert!(!engine_client.get_config().paused_merkle_updates);
+        engine_client.check_merkle_updates_active();
+    }
+
+    #[test]
+    fn test_proof_verification_pause_round_trip() {
+        let (env, authority, _engine_id, _schema_client, engine_client) = setup();
+        assert!(!engine_client.get_config().paused_proof_verification);
+        engine_client.check_proof_verification_active();
+        engine_client.pause_proof_verification(&authority);
+        assert!(engine_client.get_config().paused_proof_verification);
+        let result = engine_client.try_check_proof_verification_active();
+        assert_eq!(result, Err(Ok(AttestationError::Paused)));
+        let stranger = Address::generate(&env);
+        assert_eq!(
+            engine_client.try_unpause_proof_verification(&stranger),
+            Err(Ok(AttestationError::Unauthorized))
+        );
+        engine_client.unpause_proof_verification(&authority);
+        assert!(!engine_client.get_config().paused_proof_verification);
+        engine_client.check_proof_verification_active();
+    }
+
+    #[test]
+    fn test_update_config_requires_governance() {
+        let (env, authority, _engine_id, schema_client, engine_client) = setup();
+        let new_registry_id = env.register_contract(None, schema_registry::SchemaRegistry);
+        // governance can update
+        engine_client.update_config(&authority, &Some(new_registry_id.clone()), &Some(2u32), &None);
+        let cfg = engine_client.get_config();
+        assert_eq!(cfg.version, 2u32);
+        assert_eq!(cfg.schema_registry, new_registry_id);
+        // stranger cannot update
+        let stranger = Address::generate(&env);
+        let result = engine_client.try_update_config(&stranger, &None, &None, &None);
+        assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
+        // upgrade_info round-trip
+        let info = soroban_sdk::Bytes::from_array(&env, &[0xABu8; 4]);
+        engine_client.update_config(&authority, &None, &None, &Some(info.clone()));
+        assert_eq!(engine_client.get_config().upgrade_info, Some(info));
+        // clear upgrade_info
+        engine_client.update_config(&authority, &None, &None, &None);
+        assert_eq!(engine_client.get_config().upgrade_info, None);
+        // suppress unused warning
+        let _ = schema_client;
     }
 }
