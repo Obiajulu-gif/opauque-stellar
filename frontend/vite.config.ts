@@ -13,6 +13,18 @@ export default defineConfig({
   plugins: [react(), tailwindcss(), wasm(), topLevelAwait()],
   build: {
     target: 'esnext',
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          vendor: ['react', 'react-dom', 'react-router-dom'],
+          stellar: ['@stellar/stellar-sdk', '@stellar/freighter-api'],
+          crypto: ['@noble/curves', '@noble/hashes'],
+          state: ['zustand', 'idb'],
+          animation: ['framer-motion'],
+          prover: ['snarkjs', 'circomlibjs'],
+        },
+      },
+    },
   },
   resolve: {
     alias: {

@@ -221,3 +221,157 @@ fn u64_to_be32(val: u64) -> [u8; 32] {
     bytes[24..32].copy_from_slice(&val.to_be_bytes());
     bytes
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, IntoVal, Symbol, Vec};
+
+    #[test]
+    fn test_initialize_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+
+        let result = client.try_initialize(&admin, &verifier);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_initialize_already_initialized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+
+        client.initialize(&admin, &verifier);
+        let result = client.try_initialize(&admin, &verifier);
+        assert_eq!(result, Err(Ok(ReputationError::AlreadyInitialized)));
+    }
+
+    #[test]
+    fn test_update_merkle_root_success() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let root = BytesN::from_array(&env, &[1u8; 32]);
+        let dataset_hash = BytesN::from_array(&env, &[2u8; 32]);
+        let result = client.try_update_merkle_root(&admin, &root, &dataset_hash);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_update_merkle_root_unauthorized() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let imposter = Address::generate(&env);
+        let root = BytesN::from_array(&env, &[3u8; 32]);
+
+        env.mock_all_auths_allowing_non_root_budget();
+        let result = client.try_update_merkle_root(&imposter, &root, &root);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_latest_root_after_update() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let root = BytesN::from_array(&env, &[4u8; 32]);
+        let dataset_hash = BytesN::from_array(&env, &[5u8; 32]);
+        client.update_merkle_root(&admin, &root, &dataset_hash);
+
+        let latest = client.get_latest_root();
+        assert_eq!(latest, root);
+    }
+
+    #[test]
+    fn test_get_latest_root_empty_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let result = client.try_get_latest_root();
+        assert_eq!(result, Err(Ok(ReputationError::RootExpired)));
+    }
+
+    #[test]
+    fn test_verify_reputation_nullifier_used() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let root = BytesN::from_array(&env, &[6u8; 32]);
+        let dataset_hash = BytesN::from_array(&env, &[7u8; 32]);
+        client.update_merkle_root(&admin, &root, &dataset_hash);
+
+        let user = Address::generate(&env);
+        let nullifier = BytesN::from_array(&env, &[8u8; 32]);
+        let proof_a = BytesN::from_array(&env, &[0u8; 64]);
+        let proof_b = BytesN::from_array(&env, &[0u8; 128]);
+        let proof_c = BytesN::from_array(&env, &[0u8; 64]);
+
+        let result = client.try_verify_reputation(
+            &user,
+            &verifier,
+            &proof_a,
+            &proof_b,
+            &proof_c,
+            &root,
+            &1u64,
+            &2u64,
+            &nullifier,
+            &0u32,
+        );
+        assert_eq!(result, Err(Ok(ReputationError::InvalidProof)));
+    }
+
+    #[test]
+    fn test_update_merkle_root_caps_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        for i in 0u8..105u8 {
+            let root = BytesN::from_array(&env, &[i; 32]);
+            let _ = client.try_update_merkle_root(&admin, &root, &root);
+        }
+
+        let latest = client.get_latest_root();
+        let expected = BytesN::from_array(&env, &[104u8; 32]);
+        assert_eq!(latest, expected);
+    }
+}

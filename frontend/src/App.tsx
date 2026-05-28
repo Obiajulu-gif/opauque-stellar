@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, lazy, Suspense } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { KeysProvider, useKeys } from "./context/KeysContext";
 import { hasCompletedOnboardingTour, runOnboardingTour } from "./lib/onboardingTour";
@@ -13,10 +13,6 @@ import { TransactionHistoryView } from "./components/TransactionHistoryView";
 import { ReceiveView } from "./components/ReceiveView";
 import { ProfileView } from "./components/ProfileView";
 import { ProtocolLogPanel } from "./components/ProtocolLogPanel";
-import { SchemaStudio } from "./components/SchemaStudio";
-import { AttestationManager } from "./components/AttestationManager";
-import { MyTraitsView } from "./components/MyTraitsView";
-import { ManageView } from "./components/ManageView";
 import { Layout, type Tab } from "./components/Layout";
 import { NetworkGuard } from "./components/NetworkGuard";
 import { useWallet } from "./hooks/useWallet";
@@ -24,6 +20,19 @@ import { useRegistrationStatus } from "./hooks/useRegistrationStatus";
 import { useVaultStore } from "./store/vaultStore";
 import { useGhostAddressStore, useGhostAddressPersistence } from "./store/ghostAddressStore";
 import { getExplorerTxUrl } from "./lib/explorer";
+
+const SchemaStudio = lazy(() => import("./components/SchemaStudio").then((m) => ({ default: m.SchemaStudio })));
+const AttestationManager = lazy(() => import("./components/AttestationManager").then((m) => ({ default: m.AttestationManager })));
+const MyTraitsView = lazy(() => import("./components/MyTraitsView").then((m) => ({ default: m.MyTraitsView })));
+const ManageView = lazy(() => import("./components/ManageView").then((m) => ({ default: m.ManageView })));
+
+function LazyFallback() {
+  return (
+    <div className="flex items-center justify-center min-h-[30vh]">
+      <span className="h-6 w-6 animate-spin rounded-full border-2 border-ink-600 border-t-sol-purple" />
+    </div>
+  );
+}
 
 function AppContent() {
   const [tab, setTab] = useState<Tab>("dashboard");
@@ -99,11 +108,10 @@ function AppContent() {
     if (tab === "balance") return <PrivateBalanceView />;
     if (tab === "history") return <TransactionHistoryView />;
     if (tab === "profile") return <ProfileView onNavigate={setTab} onDisconnect={handleDisconnect} />;
-    if (tab === "reputation") return <MyTraitsView onNavigate={setTab} />;
-    if (tab === "schemas") return <SchemaStudio />;
-    if (tab === "attest") return <AttestationManager onNavigate={setTab} />;
-    if (tab === "my-traits") return <MyTraitsView onNavigate={setTab} />;
-    if (tab === "manage") return <ManageView onNavigate={setTab} />;
+    if (tab === "reputation" || tab === "my-traits") return <Suspense fallback={<LazyFallback />}><MyTraitsView onNavigate={setTab} /></Suspense>;
+    if (tab === "schemas") return <Suspense fallback={<LazyFallback />}><SchemaStudio /></Suspense>;
+    if (tab === "attest") return <Suspense fallback={<LazyFallback />}><AttestationManager onNavigate={setTab} /></Suspense>;
+    if (tab === "manage") return <Suspense fallback={<LazyFallback />}><ManageView onNavigate={setTab} /></Suspense>;
     return null;
   };
 
