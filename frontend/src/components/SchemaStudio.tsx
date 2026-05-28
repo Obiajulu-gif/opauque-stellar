@@ -149,10 +149,8 @@ export function SchemaStudio() {
         expiryLedger = latest.sequence + Math.max(1, ledgersUntilExpiry);
       }
 
-      const { schemaId, schemaKey } = await prepareRegisterSchema(
-        authority,
-        trimmedName,
-      );
+      const { schemaId, schemaKey, canonicalFieldDefs } =
+        await prepareRegisterSchema(authority, trimmedName, fieldDefsString);
 
       if (!signTransaction) throw new Error("Wallet cannot sign transactions.");
 
@@ -160,7 +158,7 @@ export function SchemaStudio() {
         authority,
         schemaId,
         name: trimmedName,
-        fieldDefinitions: fieldDefsString,
+        fieldDefinitions: canonicalFieldDefs,
         revocable,
         resolver: resolverAddr,
         schemaExpiryLedger: expiryLedger,
@@ -176,7 +174,7 @@ export function SchemaStudio() {
         resolver: resolverAddr ?? "",
         revocable,
         name: trimmedName,
-        fieldDefinitions: fieldDefsString,
+        fieldDefinitions: canonicalFieldDefs,
         version: 1,
         delegates: [],
         createdAt: Date.now(),

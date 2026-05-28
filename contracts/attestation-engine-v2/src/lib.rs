@@ -1,8 +1,12 @@
 #![no_std]
+use opaque_schema_core::{
+    parse_field_definitions, validate_attestation_data, AttestationDataError,
+    MAX_ATTESTATION_DATA_LEN, MAX_FIELD_DEFS_STR_LEN,
+};
 use sha2::{Digest, Sha256};
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN,
-    Env, IntoVal, Symbol,
+    contract, contracterror, contractimpl, contracttype, Address, Bytes, BytesN, Env, IntoVal,
+    String as SorobanString, Symbol,
 };
 
 #[contract]
@@ -38,6 +42,10 @@ pub enum AttestationError {
     NotInitialized = 9,
     AlreadyInitialized = 10,
     Paused = 11,
+    InvalidAttestationData = 12,
+    SchemaDeprecated = 13,
+    SchemaExpired = 14,
+    SchemaNotFound = 15,
 }
 
 fn attestation_key(uid: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -111,6 +119,58 @@ fn compute_attestation_uid(
     hasher.update(ledger.to_be_bytes());
     hasher.update(issuance_sequence.to_be_bytes());
     BytesN::from_array(env, &hasher.finalize().into())
+}
+
+fn soroban_string_to_str<'a>(
+    s: &SorobanString,
+    buf: &'a mut [u8; MAX_FIELD_DEFS_STR_LEN],
+) -> Option<&'a str> {
+    let len = s.len() as usize;
+    if len > MAX_FIELD_DEFS_STR_LEN {
+        return None;
+    }
+    s.copy_into_slice(&mut buf[..len]);
+    core::str::from_utf8(&buf[..len]).ok()
+}
+
+fn data_error(e: AttestationDataError) -> AttestationError {
+    match e {
+        AttestationDataError::TooLarge => AttestationError::DataTooLarge,
+        _ => AttestationError::InvalidAttestationData,
+    }
+}
+
+fn validate_attestation_against_schema(
+    env: &Env,
+    schema_registry: &Address,
+    schema_id: &BytesN<32>,
+    data: &Bytes,
+) -> Result<(), AttestationError> {
+    let schema: schema_registry::Schema = env.invoke_contract(
+        schema_registry,
+        &Symbol::new(env, "get_schema"),
+        (schema_id.clone(),).into_val(env),
+    );
+    if schema.deprecated {
+        return Err(AttestationError::SchemaDeprecated);
+    }
+    let ledger = env.ledger().sequence();
+    if schema.schema_expiry_ledger != 0 && schema.schema_expiry_ledger <= ledger {
+        return Err(AttestationError::SchemaExpired);
+    }
+    let mut buf = [0u8; MAX_FIELD_DEFS_STR_LEN];
+    let defs_str = soroban_string_to_str(&schema.field_definitions, &mut buf)
+        .ok_or(AttestationError::InvalidAttestationData)?;
+    let fields = parse_field_definitions(defs_str).map_err(|_| {
+        AttestationError::InvalidAttestationData
+    })?;
+    let len = data.len() as usize;
+    if len > MAX_ATTESTATION_DATA_LEN {
+        return Err(AttestationError::DataTooLarge);
+    }
+    let mut data_buf = [0u8; MAX_ATTESTATION_DATA_LEN];
+    data.copy_into_slice(&mut data_buf[..len]);
+    validate_attestation_data(&fields, &data_buf[..len]).map_err(data_error)
 }
 
 fn next_issuance_sequence(env: &Env, schema_id: &BytesN<32>, stealth_hash: &BytesN<32>) -> u64 {
@@ -204,6 +264,7 @@ impl AttestationEngineV2 {
         if !authorized {
             return Err(AttestationError::UnauthorizedIssuer);
         }
+        validate_attestation_against_schema(&env, &schema_registry, &schema_id, &data)?;
         let issuance_sequence = next_issuance_sequence(&env, &schema_id, &stealth_address_hash);
         let uid = compute_attestation_uid(
             &env,
@@ -385,7 +446,10 @@ impl AttestationEngineV2 {
 mod test {
     use super::*;
     extern crate schema_registry;
-    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String as SorobanString};
+    use soroban_sdk::{
+        testutils::{Address as _, Ledger as _},
+        Address, Bytes, Env, String as SorobanString,
+    };
 
     // Mock registry that always denies — used by the unauthorized-registry security test (#47).
     #[contract]
@@ -424,18 +488,39 @@ mod test {
         (env, authority, engine_contract_id, schema_client, engine_client)
     }
 
+    const AUTHORITY_KEY: [u8; 32] = [0x2au8; 32];
+
+    fn authority_key(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &AUTHORITY_KEY)
+    }
+
+    fn schema_id_for(env: &Env, name: &str, field_defs: &str) -> BytesN<32> {
+        let fields = parse_field_definitions(field_defs).unwrap();
+        let canonical = opaque_schema_core::encode_canonical_field_defs(&fields);
+        schema_registry::derive_schema_id(
+            env,
+            &authority_key(env),
+            &SorobanString::from_str(env, name),
+            1,
+            &canonical,
+        )
+    }
+
     fn register_schema(
         env: &Env,
         schema_client: &schema_registry::SchemaRegistryClient,
         authority: &Address,
         schema_id: &BytesN<32>,
+        name: &str,
+        field_defs: &str,
         revocable: bool,
     ) {
         schema_client.register_schema(
             authority,
+            &authority_key(env),
             schema_id,
-            &SorobanString::from_str(env, "TestSchema"),
-            &SorobanString::from_str(env, "field1:string"),
+            &SorobanString::from_str(env, name),
+            &SorobanString::from_str(env, field_defs),
             &revocable,
             &1u32,
             &None,
@@ -443,15 +528,44 @@ mod test {
         );
     }
 
+    fn encode_data(env: &Env, field_defs: &str, values: &[(&str, &str)]) -> Bytes {
+        let fields = parse_field_definitions(field_defs).unwrap();
+        let encoded =
+            opaque_schema_core::encode_attestation_data_from_strings(&fields, values).unwrap();
+        Bytes::from_slice(env, &encoded)
+    }
+
+    fn setup_schema(
+        env: &Env,
+        schema_client: &schema_registry::SchemaRegistryClient,
+        authority: &Address,
+        name: &str,
+        field_defs: &str,
+        revocable: bool,
+    ) -> BytesN<32> {
+        let schema_id = schema_id_for(env, name, field_defs);
+        register_schema(
+            env,
+            schema_client,
+            authority,
+            &schema_id,
+            name,
+            field_defs,
+            revocable,
+        );
+        schema_id
+    }
+
     // --- integration tests (schema_registry param removed from attest/revoke per #47) ---
+
+    const DEFAULT_DEFS: &str = "string field1";
 
     #[test]
     fn test_attest_valid() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[1u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema", DEFAULT_DEFS, true);
         let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "hello")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         assert!(uid.to_array() != [0u8; 32]);
@@ -460,11 +574,10 @@ mod test {
     #[test]
     fn test_attest_unauthorized_issuer() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[2u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema2", DEFAULT_DEFS, true);
         let stranger = Address::generate(&env);
         let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let result = engine_client.try_attest(&stranger, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         assert_eq!(result, Err(Ok(AttestationError::UnauthorizedIssuer)));
@@ -473,12 +586,11 @@ mod test {
     #[test]
     fn test_attest_delegate_authorized() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[3u8; 32]);
         let delegate = Address::generate(&env);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema3", DEFAULT_DEFS, true);
         schema_client.add_delegate(&authority, &schema_id, &delegate);
         let stealth_hash = BytesN::from_array(&env, &[0xBBu8; 32]);
-        let data = Bytes::from_array(&env, &[4u8, 5u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "delegated")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&delegate, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         assert!(uid.to_array() != [0u8; 32]);
@@ -487,8 +599,7 @@ mod test {
     #[test]
     fn test_attest_data_too_large() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[4u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema4", DEFAULT_DEFS, true);
         let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
         let big_data = Bytes::from_array(&env, &[0u8; 513]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
@@ -499,10 +610,9 @@ mod test {
     #[test]
     fn test_revoke_attestation() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema5", DEFAULT_DEFS, true);
         let stealth_hash = BytesN::from_array(&env, &[0xCCu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "revoke-me")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         engine_client.revoke_attestation(&authority, &uid);
@@ -519,10 +629,9 @@ mod test {
     #[test]
     fn test_revoke_not_revocable_schema() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[7u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, false);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema7", DEFAULT_DEFS, false);
         let stealth_hash = BytesN::from_array(&env, &[0xEEu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         let result = engine_client.try_revoke_attestation(&authority, &uid);
@@ -532,12 +641,11 @@ mod test {
     #[test]
     fn test_revoke_by_delegate() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[8u8; 32]);
         let delegate = Address::generate(&env);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema8", DEFAULT_DEFS, true);
         schema_client.add_delegate(&authority, &schema_id, &delegate);
         let stealth_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         engine_client.revoke_attestation(&delegate, &uid);
@@ -546,10 +654,9 @@ mod test {
     #[test]
     fn test_revoke_by_unauthorized_stranger() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[9u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "TestSchema9", DEFAULT_DEFS, true);
         let stealth_hash = BytesN::from_array(&env, &[0x11u8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         let stranger = Address::generate(&env);
@@ -572,10 +679,9 @@ mod test {
     #[test]
     fn same_ledger_attestations_receive_distinct_uids() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[3u8; 32]);
         let stealth_hash = BytesN::from_array(&env, &[4u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
-        let data = Bytes::new(&env);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "UidSchema", DEFAULT_DEFS, true);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let first = engine_client.attest(&authority, &schema_id, &stealth_hash, &data.clone(), &0u32, &ref_uid);
         let second = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
@@ -585,12 +691,10 @@ mod test {
     #[test]
     fn duplicate_uid_is_rejected_before_storage() {
         let (env, authority, engine_id, schema_client, client) = setup();
-        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "DupUidSchema", DEFAULT_DEFS, true);
         let stealth_hash = BytesN::from_array(&env, &[6u8; 32]);
-        let data = Bytes::new(&env);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
-        // Register the schema so authorization passes on the first attest attempt.
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
         // Pre-seed the storage with the uid that the first attest call would produce
         // (issuance_sequence=1, ledger=0), so the engine hits AlreadyExists instead of
         // writing a new entry.
@@ -601,7 +705,7 @@ mod test {
             schema_id: schema_id.clone(),
             issuer: authority.clone(),
             stealth_address_hash: stealth_hash.clone(),
-            data: Bytes::new(&env),
+            data: encode_data(&env, DEFAULT_DEFS, &[("field1", "")]),
             created_at: env.ledger().sequence(),
             expiration_ledger: 0,
             revocation_ledger: 0,
@@ -615,16 +719,92 @@ mod test {
         assert_eq!(result, Err(Ok(AttestationError::AttestationAlreadyExists)));
     }
 
+    // --- issue #45: schema-aware attestation data validation ---
+
+    #[test]
+    fn test_attest_all_field_types() {
+        let (env, authority, _engine_id, schema_client, engine_client) = setup();
+        let defs = "bool b,u8 n,u16 w,u32 x,u64 y,string s,pubkey p";
+        let schema_id = setup_schema(&env, &schema_client, &authority, "AllTypes", defs, true);
+        let pk = "0x2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a";
+        let data = encode_data(
+            &env,
+            defs,
+            &[
+                ("b", "true"),
+                ("n", "42"),
+                ("w", "1000"),
+                ("x", "99999"),
+                ("y", "100"),
+                ("s", "hello"),
+                ("p", pk),
+            ],
+        );
+        let stealth_hash = BytesN::from_array(&env, &[0x22u8; 32]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+        let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
+        assert!(uid.to_array() != [0u8; 32]);
+    }
+
+    #[test]
+    fn test_attest_rejects_malformed_data() {
+        let (env, authority, _engine_id, schema_client, engine_client) = setup();
+        let schema_id = setup_schema(&env, &schema_client, &authority, "Malformed", DEFAULT_DEFS, true);
+        let stealth_hash = BytesN::from_array(&env, &[0x33u8; 32]);
+        let bad_data = Bytes::from_array(&env, &[0xFFu8; 4]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+        let result =
+            engine_client.try_attest(&authority, &schema_id, &stealth_hash, &bad_data, &0u32, &ref_uid);
+        assert_eq!(result, Err(Ok(AttestationError::InvalidAttestationData)));
+    }
+
+    #[test]
+    fn test_attest_rejects_deprecated_schema() {
+        let (env, authority, _engine_id, schema_client, engine_client) = setup();
+        let schema_id = setup_schema(&env, &schema_client, &authority, "Deprecated", DEFAULT_DEFS, true);
+        schema_client.deprecate_schema(&authority, &schema_id);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
+        let stealth_hash = BytesN::from_array(&env, &[0x44u8; 32]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+        let result =
+            engine_client.try_attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
+        assert_eq!(result, Err(Ok(AttestationError::SchemaDeprecated)));
+    }
+
+    #[test]
+    fn test_attest_rejects_expired_schema() {
+        let (env, authority, _engine_id, schema_client, engine_client) = setup();
+        let schema_id = schema_id_for(&env, "Expired", DEFAULT_DEFS);
+        env.ledger().with_mut(|li| li.sequence_number = 10);
+        schema_client.register_schema(
+            &authority,
+            &authority_key(&env),
+            &schema_id,
+            &SorobanString::from_str(&env, "Expired"),
+            &SorobanString::from_str(&env, DEFAULT_DEFS),
+            &true,
+            &1u32,
+            &None,
+            &11u32,
+        );
+        env.ledger().with_mut(|li| li.sequence_number = 12);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
+        let stealth_hash = BytesN::from_array(&env, &[0x55u8; 32]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+        let result =
+            engine_client.try_attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
+        assert_eq!(result, Err(Ok(AttestationError::SchemaExpired)));
+    }
+
     // --- issue #46: get_attestation read API ---
 
     #[test]
     fn get_attestation_returns_stored_record() {
         let (env, authority, _engine_id, schema_client, client) = setup();
-        let schema_id = BytesN::from_array(&env, &[7u8; 32]);
         let stealth_hash = BytesN::from_array(&env, &[8u8; 32]);
-        let data = Bytes::new(&env);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "GetAttest", DEFAULT_DEFS, true);
         let uid = client.attest(&authority, &schema_id, &stealth_hash, &data, &0, &ref_uid);
         let att = client.get_attestation(&uid);
         assert_eq!(att.uid, uid);
@@ -692,19 +872,15 @@ mod test {
     #[test]
     fn test_attest_paused_blocks_issuance_but_allows_reads_and_gov() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[40u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
-        // governance (authority) pauses attestations
+        let schema_id = setup_schema(&env, &schema_client, &authority, "PausedSchema", DEFAULT_DEFS, true);
         engine_client.pause_attestation(&authority);
         let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
-        let data = Bytes::from_array(&env, &[1u8]);
+        let data = encode_data(&env, DEFAULT_DEFS, &[("field1", "x")]);
         let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
         let result = engine_client.try_attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         assert_eq!(result, Err(Ok(AttestationError::Paused)));
-        // reads still work
         let cfg = engine_client.get_config();
         assert!(cfg.paused_attestation);
-        // governance can unpause
         engine_client.unpause_attestation(&authority);
         let uid = engine_client.attest(&authority, &schema_id, &stealth_hash, &data, &0u32, &ref_uid);
         assert!(uid.to_array() != [0u8; 32]);
@@ -713,8 +889,7 @@ mod test {
     #[test]
     fn test_pause_requires_governance_authority() {
         let (env, authority, _engine_id, schema_client, engine_client) = setup();
-        let schema_id = BytesN::from_array(&env, &[41u8; 32]);
-        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        let schema_id = setup_schema(&env, &schema_client, &authority, "PauseAuth", DEFAULT_DEFS, true);
         let stranger = Address::generate(&env);
         let result = engine_client.try_pause_attestation(&stranger);
         assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
