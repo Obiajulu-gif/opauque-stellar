@@ -267,6 +267,24 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
       const cached = await getAnnouncementsForCluster(cluster);
       const sync = await getSyncState(cluster);
       const lastScanned = sync?.lastScannedSlot ?? null;
+      // Gap detection: ensure cached announcements cover up to lastScannedSlot
+      if (cached.length > 0 && lastScanned != null) {
+        const maxCachedSlot = Math.max(...cached.map((a) => a.slot));
+        if (maxCachedSlot < lastScanned) {
+          console.warn('[useScanner] Detected gap between cached announcements and sync state. Resetting sync.', {
+            maxCachedSlot,
+            lastScanned,
+          });
+          await clearSyncState(cluster);
+          // Inform UI that a gap was detected and a full sync may be needed
+          setProgress((p) => ({
+            ...p,
+            phase: "error",
+            error: "Ledger gap detected – cache cleared. Click \"Full Rescan\" to re-sync.",
+            message: "Ledger gap detected",
+          }));
+        }
+      }
       const toBlock = BigInt(await publicClient.getSlot());
       const fromBlock =
         clearCache || lastScanned == null
