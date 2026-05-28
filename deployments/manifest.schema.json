@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opaque.stellar/deployments/manifest.schema.json",
+  "title": "Opaque Stellar Deployment Manifest v1",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "release",
+    "network",
+    "networkPassphrase",
+    "deploymentLedger",
+    "contracts",
+    "artifacts"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "release": {
+      "type": "string",
+      "pattern": "^v[0-9]+$"
+    },
+    "network": {
+      "type": "string",
+      "enum": ["testnet", "mainnet"]
+    },
+    "networkPassphrase": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rpcUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "horizonUrl": {
+      "type": "string",
+      "format": "uri"
+    },
+    "deploymentLedger": {
+      "type": ["integer", "null"],
+      "minimum": 1
+    },
+    "deployedAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "deployer": {
+      "type": ["string", "null"],
+      "description": "Stellar account (G…) that submitted deploy transactions"
+    },
+    "admin": {
+      "type": ["string", "null"],
+      "description": "Contract admin account or role holder"
+    },
+    "multisig": {
+      "type": ["string", "null"],
+      "description": "Multisig account controlling upgrades, if any"
+    },
+    "deploymentStatus": {
+      "type": "string",
+      "enum": ["template", "deployed", "not_deployed"]
+    },
+    "contracts": {
+      "type": "object",
+      "required": [
+        "stealthRegistry",
+        "stealthAnnouncer",
+        "groth16Verifier",
+        "reputationVerifier",
+        "schemaRegistry",
+        "attestationEngineV2"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "stealthRegistry": { "$ref": "#/$defs/contractRecord" },
+        "stealthAnnouncer": { "$ref": "#/$defs/contractRecord" },
+        "groth16Verifier": { "$ref": "#/$defs/contractRecord" },
+        "reputationVerifier": { "$ref": "#/$defs/contractRecord" },
+        "schemaRegistry": { "$ref": "#/$defs/contractRecord" },
+        "attestationEngineV2": { "$ref": "#/$defs/contractRecord" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "required": ["frontend", "circuits"],
+      "additionalProperties": false,
+      "properties": {
+        "frontend": {
+          "type": "object",
+          "required": ["buildCommit"],
+          "properties": {
+            "buildCommit": { "type": ["string", "null"] },
+            "repository": { "type": "string" }
+          }
+        },
+        "circuits": {
+          "type": "object",
+          "required": ["v2"],
+          "properties": {
+            "v2": {
+              "type": "object",
+              "required": ["r1csHash", "verificationKeyHash"],
+              "properties": {
+                "r1csHash": { "type": ["string", "null"], "pattern": "^(|[a-f0-9]{64})$" },
+                "verificationKeyHash": {
+                  "type": ["string", "null"],
+                  "pattern": "^(|[a-f0-9]{64})$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string", "minLength": 1 },
+        "output": { "type": ["string", "null"] }
+      }
+    }
+  },
+  "$defs": {
+    "contractRecord": {
+      "type": "object",
+      "required": ["id", "wasmHash"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^(|C[A-Z2-7]{55})$"
+        },
+        "wasmHash": {
+          "type": "string",
+          "pattern": "^(|[a-f0-9]{64})$",
+          "description": "SHA-256 hex of deployed WASM artifact"
+        },
+        "package": { "type": "string" }
+      }
+    }
+  }
+}

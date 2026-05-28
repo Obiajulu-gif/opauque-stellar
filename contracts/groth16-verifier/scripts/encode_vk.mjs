@@ -7,7 +7,7 @@
  * key is derived from the exact deployed zkey via
  *   snarkjs zkey export verificationkey stealth_reputation_final.zkey vk.json
  *
- * Encoding (matches the existing V1 constants and Stellar's BN254 host, CAP-74,
+ * Encoding (matches the existing V1 constants and Stellar's BN254 host,
  * which follows the EIP-197 convention):
  *   - Field element  -> 32-byte big-endian.
  *   - G1 point [x, y] -> 64 bytes  (x || y).

@@ -114,6 +114,28 @@ impl ReputationVerifier {
         Ok(())
     }
 
+    pub fn get_latest_root(env: Env) -> Result<BytesN<32>, ReputationError> {
+        let history: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&history_key(&env))
+            .unwrap_or(Vec::new(&env));
+        if history.is_empty() {
+            return Err(ReputationError::RootExpired);
+        }
+        let root = history.get(history.len() - 1).unwrap();
+        let entry: MerkleRootEntry = env
+            .storage()
+            .persistent()
+            .get(&root_key(&root))
+            .ok_or(ReputationError::RootExpired)?;
+        let ledger = env.ledger().sequence();
+        if ledger.saturating_sub(entry.ledger) > ROOT_EXPIRY_LEDGERS {
+            return Err(ReputationError::RootExpired);
+        }
+        Ok(root)
+    }
+
     pub fn verify_reputation(
         env: Env,
         user: Address,
@@ -279,14 +301,12 @@ mod test {
         let dataset_hash = BytesN::from_array(&env, &[2u8; 32]);
         client.update_merkle_root(&admin, &root, &dataset_hash);
 
-        // Verify the root was stored by attempting a verify call that checks root existence
         let user = Address::generate(&env);
         let nullifier = BytesN::from_array(&env, &[0x99u8; 32]);
         let proof_a = BytesN::from_array(&env, &[0u8; 64]);
         let proof_b = BytesN::from_array(&env, &[0u8; 128]);
         let proof_c = BytesN::from_array(&env, &[0u8; 64]);
 
-        // This should succeed (root exists, mock verifier returns true)
         client.verify_reputation(
             &user,
             &mock_id,
@@ -312,9 +332,33 @@ mod test {
     }
 
     #[test]
+    fn test_get_latest_root_after_update() {
+        let (env, admin, _, client, _mock_id) = setup_with_mock();
+        let root = BytesN::from_array(&env, &[4u8; 32]);
+        let dataset_hash = BytesN::from_array(&env, &[5u8; 32]);
+        client.update_merkle_root(&admin, &root, &dataset_hash);
+
+        let latest = client.get_latest_root();
+        assert_eq!(latest, root);
+    }
+
+    #[test]
+    fn test_get_latest_root_empty_history() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ReputationVerifier);
+        let client = ReputationVerifierClient::new(&env, &contract_id);
+        let admin = Address::generate(&env);
+        let verifier = Address::generate(&env);
+        client.initialize(&admin, &verifier);
+
+        let result = client.try_get_latest_root();
+        assert_eq!(result, Err(Ok(ReputationError::RootExpired)));
+    }
+
+    #[test]
     fn test_verify_reputation_root_not_published() {
         let (env, _, _, client, mock_id) = setup_with_mock();
-        // Don't publish any root — verify should fail with RootExpired
         let user = Address::generate(&env);
         let unknown_root = BytesN::from_array(&env, &[0x11u8; 32]);
         let nullifier = BytesN::from_array(&env, &[0x22u8; 32]);
@@ -350,7 +394,6 @@ mod test {
         let proof_b = BytesN::from_array(&env, &[0u8; 128]);
         let proof_c = BytesN::from_array(&env, &[0u8; 64]);
 
-        // First call succeeds (mock verifier returns true)
         client.verify_reputation(
             &user,
             &mock_id,
@@ -364,7 +407,6 @@ mod test {
             &0u32,
         );
 
-        // Second call with same nullifier fails
         let result = client.try_verify_reputation(
             &user,
             &mock_id,
@@ -393,10 +435,6 @@ mod test {
         let proof_b = BytesN::from_array(&env, &[0u8; 128]);
         let proof_c = BytesN::from_array(&env, &[0u8; 64]);
 
-        // Set expiration_ledger to 0 means no expiration check.
-        // Use a ledger value that's definitely in the past.
-        // Default env ledger sequence is 0, so expiration_ledger=0 disables the check.
-        // Instead, advance the ledger and use a small expiration.
         env.ledger().set_sequence_number(100);
         let result = client.try_verify_reputation(
             &user,
@@ -415,7 +453,7 @@ mod test {
 
     #[test]
     fn test_verify_reputation_wrong_verifier_address() {
-        let (env, _, _, client, _) = setup_with_mock();
+        let (env, admin, _, client, _) = setup_with_mock();
         let root = BytesN::from_array(&env, &[0x33u8; 32]);
         let dataset_hash = BytesN::from_array(&env, &[0x44u8; 32]);
         client.update_merkle_root(&admin, &root, &dataset_hash);
@@ -500,5 +538,19 @@ mod test {
             &nullifier2,
             &0u32,
         );
+    }
+
+    #[test]
+    fn test_update_merkle_root_caps_history() {
+        let (env, admin, _, client, _mock_id) = setup_with_mock();
+
+        for i in 0u8..105u8 {
+            let root = BytesN::from_array(&env, &[i; 32]);
+            let _ = client.try_update_merkle_root(&admin, &root, &root);
+        }
+
+        let latest = client.get_latest_root();
+        let expected = BytesN::from_array(&env, &[104u8; 32]);
+        assert_eq!(latest, expected);
     }
 }

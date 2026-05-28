@@ -1,23 +1,60 @@
 /**
- * Soroban contract IDs — set via VITE_* env after deploy, or replace defaults.
+ * Soroban contract IDs — resolved from the canonical deployment manifest
+ * (deployments/v1/<network>.json) with optional VITE_<NETWORK>_* overrides in dev.
  */
 
-function contractId(envKey: string, fallback: string): string {
-  const v = (import.meta.env[envKey] as string | undefined)?.trim();
-  return v && v.length > 0 ? v : fallback;
-}
+import { getNetwork } from "../lib/chain";
+import {
+  CONTRACT_KEYS,
+  CONTRACT_ENV_SUFFIX,
+  type ContractKey,
+  resolveAllContractIds,
+  assertProductionAddresses,
+  getActiveManifest,
+  isManifestNetwork,
+} from "./deploymentManifest";
 
-/** Placeholder; deploy contracts and set VITE_STEALTH_REGISTRY_CONTRACT etc. */
-const PLACEHOLDER = "CDIYLW3OMCUHP37AMDZFMIB3GCY66MFICSCU3WYMB66L6XQM5CKQQO3S";
+export type { ContractKey };
+
+/** @deprecated Use manifest-backed IDs; kept for mainnet gating checks. */
+export const PLACEHOLDER_CONTRACT_ID =
+  "CDIYLW3OMCUHP37AMDZFMIB3GCY66MFICSCU3WYMB66L6XQM5CKQQO3S";
+
+const network = getNetwork();
+const resolved = resolveAllContractIds(network);
+
+assertProductionAddresses(network, resolved);
 
 export const deployedAddresses = {
-  network: "testnet" as const,
-  stealthRegistry: contractId("VITE_STEALTH_REGISTRY_CONTRACT", PLACEHOLDER),
-  stealthAnnouncer: contractId("VITE_STEALTH_ANNOUNCER_CONTRACT", PLACEHOLDER),
-  groth16Verifier: contractId("VITE_GROTH16_VERIFIER_CONTRACT", PLACEHOLDER),
-  reputationVerifier: contractId("VITE_REPUTATION_VERIFIER_CONTRACT", PLACEHOLDER),
-  schemaRegistry: contractId("VITE_SCHEMA_REGISTRY_CONTRACT", PLACEHOLDER),
-  attestationEngineV2: contractId("VITE_ATTESTATION_ENGINE_CONTRACT", PLACEHOLDER),
+  network,
+  stealthRegistry: resolved.stealthRegistry,
+  stealthAnnouncer: resolved.stealthAnnouncer,
+  groth16Verifier: resolved.groth16Verifier,
+  reputationVerifier: resolved.reputationVerifier,
+  schemaRegistry: resolved.schemaRegistry,
+  attestationEngineV2: resolved.attestationEngineV2,
 } as const;
 
 export type DeployedAddresses = typeof deployedAddresses;
+
+/** Env keys used by contract-config mainnet validation (network-prefixed). */
+export function contractEnvKeysForNetwork(
+  network: "mainnet" | "testnet",
+): string[] {
+  return CONTRACT_KEYS.map(
+    (key) => `VITE_${network.toUpperCase()}_${CONTRACT_ENV_SUFFIX[key]}`,
+  );
+}
+
+export function getManifestPassphrase(): string | null {
+  const manifest = getActiveManifest();
+  return manifest?.networkPassphrase ?? null;
+}
+
+export function isDeployedOnActiveNetwork(): boolean {
+  const manifest = getActiveManifest();
+  if (!manifest || !isManifestNetwork(network)) return false;
+  return manifest.deploymentStatus === "deployed";
+}
+
+export { CONTRACT_ENV_SUFFIX, CONTRACT_KEYS };

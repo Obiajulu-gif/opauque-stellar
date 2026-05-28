@@ -1,0 +1,10 @@
+{
+  "name": "opaque-stellar",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "verify:deployment": "node scripts/verify-deployment-manifest.mjs",
+    "verify:deployment:strict": "node scripts/verify-deployment-manifest.mjs --strict",
+    "update:manifest-wasm": "node scripts/update-manifest-wasm-hashes.mjs"
+  }
+}

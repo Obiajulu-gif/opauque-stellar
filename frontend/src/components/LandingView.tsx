@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { useWallet } from "../hooks/useWallet";
-import { getCluster } from "../lib/chain";
+import { getCluster, getNetworkPassphrase } from "../lib/chain";
 import { useKeys } from "../context/KeysContext";
 import { isRegistered } from "../lib/registry";
 import { registerStealthKeys, SCHEME_ID_SECP256K1 } from "../lib/contracts";
-import { hexToBytes, type Hex } from "../lib/stealth";
+import { hexToBytes, buildDomainSeparatedMessage, LEGACY_SETUP_MESSAGE, type Hex } from "../lib/stealth";
 import { getConfigForCluster } from "../contracts/contract-config";
 import {
   getRememberSignaturePreference,
@@ -12,9 +12,6 @@ import {
   saveSignatureSession,
   setRememberSignaturePreference,
 } from "../lib/signatureSession";
-
-const SETUP_MESSAGE =
-  "Sign this message to derive your Opaque Cash stealth keys on Stellar. This is not a transaction and does not move funds.";
 
 type Phase = "idle" | "restoring" | "connecting" | "signing" | "checking" | "register" | "registering" | "done" | "error";
 
@@ -32,6 +29,15 @@ export function LandingView() {
   const rememberSessionRef = useRef(rememberSession);
   rememberSessionRef.current = rememberSession;
 
+  const getDomainMessage = useCallback((addr: string) => {
+    return buildDomainSeparatedMessage({
+      origin: window.location.origin,
+      networkPassphrase: getNetworkPassphrase(),
+      walletPublicKey: addr,
+      purpose: "stealth-key-derivation",
+    });
+  }, []);
+
   const address = publicKey;
 
   useEffect(() => {
@@ -41,17 +47,19 @@ export function LandingView() {
   useEffect(() => {
     if (isSetup || !connected || !address) return;
 
+    const domainMessage = getDomainMessage(address);
+
     const signAndPersist = async (): Promise<`0x${string}`> => {
       if (!signMessage) throw new Error("Wallet does not support message signing.");
       setPhase("signing");
-      const encoded = new TextEncoder().encode(SETUP_MESSAGE);
+      const encoded = new TextEncoder().encode(domainMessage);
       const sigBytes = await signMessage(encoded);
       const hex = `0x${Array.from(sigBytes).map((b) => b.toString(16).padStart(2, "0")).join("")}` as `0x${string}`;
       await saveSignatureSession({
         signatureHex: hex,
         address,
         cluster,
-        message: SETUP_MESSAGE,
+        message: domainMessage,
         remember: rememberSessionRef.current,
       });
       return hex;
@@ -81,7 +89,7 @@ export function LandingView() {
       const saved = await loadSignatureSession({
         address,
         cluster,
-        message: SETUP_MESSAGE,
+        message: domainMessage,
       });
       // StrictMode: first effect run is cancelled while awaiting; unblock UI so remount can run again.
       if (cancelled) {
@@ -92,6 +100,30 @@ export function LandingView() {
         resumeInitializeAfterConnectRef.current = false;
         await finalizeFromSignature(saved);
         return;
+      }
+      // Migration: try loading legacy session for testnet users
+      if (cluster === "testnet") {
+        const legacySaved = await loadSignatureSession({
+          address,
+          cluster,
+          message: LEGACY_SETUP_MESSAGE,
+        });
+        if (legacySaved) {
+          resumeInitializeAfterConnectRef.current = false;
+          // Re-sign with domain-separated message to migrate
+          try {
+            const hex = await signAndPersist();
+            if (cancelled) {
+              setPhase("idle");
+              return;
+            }
+            await finalizeFromSignature(hex);
+          } catch (e) {
+            setError(e instanceof Error ? e.message : "Signature failed");
+            setPhase("error");
+          }
+          return;
+        }
       }
       const autoContinue = resumeInitializeAfterConnectRef.current;
       if (autoContinue) {
@@ -117,7 +149,7 @@ export function LandingView() {
     return () => {
       cancelled = true;
     };
-  }, [isSetup, connected, address, cluster, setFromSignature, signMessage]);
+  }, [isSetup, connected, address, cluster, setFromSignature, signMessage, getDomainMessage]);
 
   const handleEnterVault = async () => {
     setError(null);
@@ -142,18 +174,27 @@ export function LandingView() {
       return;
     }
 
+    const domainMessage = getDomainMessage(address);
     let signatureHex: `0x${string}` | null = null;
     signatureHex = await loadSignatureSession({
       address,
       cluster,
-      message: SETUP_MESSAGE,
+      message: domainMessage,
     });
+
+    if (!signatureHex && cluster === "testnet") {
+      signatureHex = await loadSignatureSession({
+        address,
+        cluster,
+        message: LEGACY_SETUP_MESSAGE,
+      });
+    }
 
     if (!signatureHex) {
       setPhase("signing");
       try {
         if (!signMessage) throw new Error("Wallet does not support message signing.");
-        const encoded = new TextEncoder().encode(SETUP_MESSAGE);
+        const encoded = new TextEncoder().encode(domainMessage);
         const sigBytes = await signMessage(encoded);
         const hex = `0x${Array.from(sigBytes).map((b) => b.toString(16).padStart(2, "0")).join("")}` as `0x${string}`;
         signatureHex = hex;
@@ -161,7 +202,7 @@ export function LandingView() {
           signatureHex: hex,
           address,
           cluster,
-          message: SETUP_MESSAGE,
+          message: domainMessage,
           remember: rememberSession,
         });
       } catch (e) {

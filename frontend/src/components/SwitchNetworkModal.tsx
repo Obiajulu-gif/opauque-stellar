@@ -4,8 +4,11 @@
  */
 
 import { type ReactNode } from "react";
-import { getCluster } from "../lib/chain";
-import { SUPPORTED_CLUSTERS } from "../contracts/contract-config";
+import { getConfiguredNetwork, getNetworkEnvValue } from "../lib/chain";
+import {
+  getNetworkSupportMessage,
+  SUPPORTED_CLUSTERS,
+} from "../contracts/contract-config";
 import { ModalShell } from "./ModalShell";
 
 export type SwitchNetworkModalProps = {
@@ -17,11 +20,11 @@ export type SwitchNetworkModalProps = {
 
 export function SwitchNetworkModal({
   title = "Switch network",
-  description = `Opaque supports ${SUPPORTED_CLUSTERS.join(", ")} only. Update your VITE_STELLAR_NETWORK env variable.`,
+  description = `Opaque supports ${SUPPORTED_CLUSTERS.join(", ")}. Mainnet also requires production RPC and contract IDs.`,
   onClose,
   showClose = false,
 }: SwitchNetworkModalProps) {
-  const cluster = getCluster();
+  const network = getConfiguredNetwork();
 
   return (
     <ModalShell
@@ -34,7 +37,10 @@ export function SwitchNetworkModal({
     >
       <div className="flex flex-col gap-3">
         <p className="text-sm text-mist">
-          Current network: <span className="text-white font-mono">{cluster}</span>
+          Current network: <span className="text-white font-mono">{getNetworkEnvValue()}</span>
+        </p>
+        <p className="text-sm text-mist">
+          {getNetworkSupportMessage(network)}
         </p>
         <p className="text-sm text-mist">
           To switch networks, set{" "}

@@ -1,3 +1,5 @@
+import { getCluster } from "../lib/chain";
+
 type TestnetBannerProps = {
   isConnected: boolean;
 };
@@ -23,10 +25,22 @@ function FlaskIcon() {
   );
 }
 
+function formatNetworkLabel(network: string): string {
+  if (network === "mainnet") return "Mainnet";
+  if (network === "local") return "Local";
+  return network[0].toUpperCase() + network.slice(1);
+}
+
 export function TestnetBanner({ isConnected }: TestnetBannerProps) {
-  const copy = isConnected
-    ? "Alpha Phase: Opaque is live on Testnet. Please ensure you are using testnet only."
-    : "Connect your wallet to access your private stealth vault on Testnet.";
+  const network = getCluster();
+  const networkLabel = formatNetworkLabel(network);
+  const copy = network === "mainnet"
+    ? isConnected
+      ? "Production Network: Opaque is configured for Stellar Mainnet. Verify contract IDs before moving real value."
+      : "Connect your wallet to access your private stealth vault on Stellar Mainnet."
+    : isConnected
+      ? `Alpha Phase: Opaque is live on ${networkLabel}. Please use the configured network only.`
+      : `Connect your wallet to access your private stealth vault on ${networkLabel}.`;
 
   return (
     <div

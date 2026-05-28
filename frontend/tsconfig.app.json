@@ -4,7 +4,9 @@
     "target": "ES2022",
     "baseUrl": ".",
     "paths": {
-      "@wasm/*": ["public/pkg/*"]
+      "@wasm/*": ["public/pkg/*"],
+      "@deployments": ["../deployments/index.ts"],
+      "@deployments/*": ["../deployments/*"]
     },
     "useDefineForClassFields": true,
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
@@ -29,5 +31,5 @@
     "noFallthroughCasesInSwitch": true,
     "noUncheckedSideEffectImports": true
   },
-  "include": ["src", "public/pkg/**/*.d.ts"]
+  "include": ["src", "../deployments/**/*.ts", "../deployments/v1/*.json", "public/pkg/**/*.d.ts"]
 }

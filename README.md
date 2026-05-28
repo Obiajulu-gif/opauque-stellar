@@ -88,7 +88,7 @@ Stealth Stellar accounts are derived deterministically from the stealth secp256k
 | `groth16-verifier` | Verify Groth16 proofs (BN254) |
 | `reputation-verifier` | PSR verification + nullifiers |
 
-Deploy with the [Stellar CLI](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup), then set contract IDs in `frontend/.env` (see `frontend/.env.example`).
+Deploy with the [Stellar CLI](https://developers.stellar.org/docs/build/smart-contracts/getting-started/setup), then record contract IDs in the canonical manifest at [`deployments/v1/testnet.json`](deployments/v1/testnet.json) (see [`deployments/README.md`](deployments/README.md)). Optional `VITE_<NETWORK>_*` overrides in `frontend/.env` are for local dev only.
 
 ---
 
@@ -129,7 +129,7 @@ cd ..
 ```bash
 cd frontend
 cp .env.example .env
-# Edit VITE_STELLAR_NETWORK, RPC URLs, and VITE_*_CONTRACT IDs
+# Edit VITE_STELLAR_NETWORK; contract IDs come from deployments/v1/testnet.json
 npm install
 npm run dev
 ```
@@ -150,11 +150,12 @@ npm run build
 
 ## Environment variables
 
-See [`frontend/.env.example`](frontend/.env.example). Key settings:
+See [`frontend/.env.example`](frontend/.env.example) and [`deployments/README.md`](deployments/README.md). Key settings:
 
 - `VITE_STELLAR_NETWORK` — `testnet` | `mainnet` | `futurenet` | `local`
-- `VITE_STELLAR_RPC_URL` / `VITE_STELLAR_HORIZON_URL`
-- `VITE_STEALTH_REGISTRY_CONTRACT`, `VITE_STEALTH_ANNOUNCER_CONTRACT`, etc.
+- `VITE_STELLAR_RPC_URL` / `VITE_STELLAR_HORIZON_URL` (optional; manifest defaults)
+- **Canonical contract IDs** — [`deployments/v1/testnet.json`](deployments/v1/testnet.json) / [`deployments/v1/mainnet.json`](deployments/v1/mainnet.json)
+- Release evidence — [`RELEASE_NOTES.md`](RELEASE_NOTES.md)
 
 ---
 

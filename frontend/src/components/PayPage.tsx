@@ -128,7 +128,7 @@ export function PayPage() {
   const maxSendableBalance = useMemo(() => {
     if (activeBalance == null) return null;
     return activeBalance > feeBuffer ? activeBalance - feeBuffer : 0n;
-  }, [activeBalance]);
+  }, [activeBalance, feeBuffer]);
 
   const inputStroops = useMemo(() => {
     const raw = amount.trim();

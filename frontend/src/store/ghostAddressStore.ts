@@ -2,10 +2,19 @@
  * "Pending Manual Receives" — manual ghost receive addresses per chain.
  * Used for one-time receive without on-chain announcement; scanner checks balance via multicall.
  * Persisted (localStorage) so the app can monitor and claim incoming funds.
+ *
+ * Ephemeral private keys are encrypted at rest using a user-held password (PBKDF2 + AES-256-GCM).
+ * See docs/GHOST_THREAT_MODEL.md for residual browser compromise risks.
  */
 
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import {
+  encryptGhostEntries,
+  decryptGhostEntries,
+  type EncryptedGhostPayload,
+} from "../lib/ghostCrypto";
+
 type Address = string;
 
 export type GhostEntry = {
@@ -20,10 +29,24 @@ export const GHOST_ADDRESSES_STORAGE_KEY = "opaque-ghost-addresses";
 
 const STORAGE_KEY = GHOST_ADDRESSES_STORAGE_KEY;
 
-/** Read and parse ghost entries from localStorage (for use in scanner without React). */
+/** Module-level password held in memory only. Never persisted. */
+let _password: string | null = null;
+
+export function setGhostPassword(password: string): void {
+  _password = password;
+}
+
+export function clearGhostPassword(): void {
+  _password = null;
+}
+
+export function hasGhostPassword(): boolean {
+  return _password !== null;
+}
+
+/** Read ghost entries from the in-memory store (synchronous, for use in scanner). */
 export function getStoredGhostEntries(): GhostEntry[] {
-  if (typeof localStorage === "undefined") return [];
-  return parseStored(localStorage.getItem(STORAGE_KEY));
+  return useGhostAddressStore.getState().entries;
 }
 
 /** Normalize entry so all fields are JSON-safe (explicit strings where needed). */
@@ -31,9 +54,10 @@ function normalizeEntry(entry: Omit<GhostEntry, "createdAt">): GhostEntry {
   return {
     cluster: String(entry.cluster),
     stealthAddress: String(entry.stealthAddress) as Address,
-    ephemeralPrivKeyHex: entry.ephemeralPrivKeyHex != null && entry.ephemeralPrivKeyHex !== ""
-      ? String(entry.ephemeralPrivKeyHex)
-      : undefined,
+    ephemeralPrivKeyHex:
+      entry.ephemeralPrivKeyHex != null && entry.ephemeralPrivKeyHex !== ""
+        ? String(entry.ephemeralPrivKeyHex)
+        : undefined,
     createdAt: Number(Date.now()),
   };
 }
@@ -44,7 +68,13 @@ function parseStored(raw: string | null): GhostEntry[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed)) return parsed;
-    if (parsed && typeof parsed === "object" && Array.isArray((parsed as { state?: { entries?: unknown } }).state?.entries)) {
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      Array.isArray(
+        (parsed as { state?: { entries?: unknown } }).state?.entries,
+      )
+    ) {
       return (parsed as { state: { entries: GhostEntry[] } }).state.entries;
     }
     return [];
@@ -62,15 +92,35 @@ type GhostState = {
   /** Remove entries missing ephemeralPrivKeyHex (zombies). Call on app mount. */
   sanitizeGhostAddresses: () => void;
   /** Find a single entry by stealthAddress and cluster (for withdrawal matching). */
-  getEntry: (stealthAddress: string, cluster: string) => GhostEntry | undefined;
+  getEntry: (
+    stealthAddress: string,
+    cluster: string,
+  ) => GhostEntry | undefined;
   getForCluster: (cluster: string) => GhostEntry[];
 };
+
+async function persistEntries(entries: GhostEntry[]): Promise<void> {
+  if (typeof localStorage === "undefined") return;
+  try {
+    if (_password) {
+      const encrypted = await encryptGhostEntries(entries, _password);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(encrypted));
+    } else {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    }
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 export const useGhostAddressStore = create<GhostState>()((set, get) => ({
   entries: [],
 
   add: (entry) => {
-    if (entry.ephemeralPrivKeyHex == null || entry.ephemeralPrivKeyHex === "") {
+    if (
+      entry.ephemeralPrivKeyHex == null ||
+      entry.ephemeralPrivKeyHex === ""
+    ) {
       return;
     }
     const newEntry = normalizeEntry(entry);
@@ -84,15 +134,10 @@ export const useGhostAddressStore = create<GhostState>()((set, get) => ({
       const entries = state.entries.filter(
         (e) =>
           e.cluster !== cluster ||
-          String(e.stealthAddress).toLowerCase() !== stealthAddress.toLowerCase()
+          String(e.stealthAddress).toLowerCase() !==
+            stealthAddress.toLowerCase(),
       );
-      if (typeof localStorage !== "undefined") {
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
-        } catch {
-          /* ignore quota / private mode */
-        }
-      }
+      void persistEntries(entries);
       return { entries };
     }),
 
@@ -101,7 +146,10 @@ export const useGhostAddressStore = create<GhostState>()((set, get) => ({
       entries: entries.map((e) => ({
         cluster: String(e.cluster),
         stealthAddress: String(e.stealthAddress) as Address,
-        ephemeralPrivKeyHex: e.ephemeralPrivKeyHex != null ? String(e.ephemeralPrivKeyHex) : undefined,
+        ephemeralPrivKeyHex:
+          e.ephemeralPrivKeyHex != null
+            ? String(e.ephemeralPrivKeyHex)
+            : undefined,
         createdAt: Number(e.createdAt),
       })),
     }),
@@ -115,7 +163,8 @@ export const useGhostAddressStore = create<GhostState>()((set, get) => ({
     get().entries.find(
       (e) =>
         e.cluster === cluster &&
-        String(e.stealthAddress).toLowerCase() === stealthAddress.toLowerCase()
+        String(e.stealthAddress).toLowerCase() ===
+          stealthAddress.toLowerCase(),
     ),
 
   getForCluster: (cluster: string) =>
@@ -135,8 +184,40 @@ export function useGhostAddressPersistence(): void {
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
     const raw = localStorage.getItem(STORAGE_KEY);
-    const stored = parseStored(raw);
-    setEntries(stored);
+    if (!raw) {
+      hasLoadedFromStorage.current = true;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      // Encrypted format
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        "version" in parsed &&
+        "salt" in parsed
+      ) {
+        if (_password) {
+          void decryptGhostEntries(
+            parsed as EncryptedGhostPayload,
+            _password,
+          ).then((decrypted) => {
+            setEntries(decrypted as GhostEntry[]);
+            hasLoadedFromStorage.current = true;
+          });
+          return;
+        }
+        // No password set yet — can't decrypt, wait for password
+        hasLoadedFromStorage.current = true;
+        return;
+      }
+      // Legacy plaintext
+      const stored = parseStored(raw);
+      setEntries(stored);
+    } catch {
+      // corrupt data
+    }
     hasLoadedFromStorage.current = true;
   }, [setEntries]);
 
@@ -144,6 +225,33 @@ export function useGhostAddressPersistence(): void {
   useEffect(() => {
     if (typeof localStorage === "undefined") return;
     if (!hasLoadedFromStorage.current) return;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(entries));
+    void persistEntries(entries);
   }, [entries]);
+}
+
+/**
+ * Re-decrypt entries after password is set (call this after setGhostPassword).
+ */
+export async function rehydrateWithPassword(): Promise<void> {
+  if (typeof localStorage === "undefined" || !_password) return;
+  const raw = localStorage.getItem(STORAGE_KEY);
+  if (!raw) return;
+
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      "version" in parsed &&
+      "salt" in parsed
+    ) {
+      const decrypted = await decryptGhostEntries(
+        parsed as EncryptedGhostPayload,
+        _password,
+      );
+      useGhostAddressStore.getState().setEntries(decrypted as GhostEntry[]);
+    }
+  } catch {
+    // wrong password or corrupt data
+  }
 }

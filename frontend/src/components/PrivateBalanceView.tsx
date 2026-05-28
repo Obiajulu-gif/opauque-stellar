@@ -16,6 +16,7 @@ import { useKeys } from "../context/KeysContext";
 import { useWallet } from "../hooks/useWallet";
 import { executeStealthWithdrawal, withdrawFromGhostAddress } from "../lib/stealthLifecycle";
 import type { MasterKeys } from "../lib/stealthLifecycle";
+import { getNativeWithdrawalQuote, type NativeWithdrawalQuote } from "../lib/stellar";
 import type { ProtocolStep } from "./ProtocolStepper";
 import type { OpaqueWasmModule } from "../hooks/useOpaqueWasm";
 import { useReputationStore } from "../store/reputationStore";
@@ -286,6 +287,12 @@ export function PrivateBalanceView() {
   const [destinationByTxId, setDestinationByTxId] = useState<Record<string, string>>({});
   const [newlyDetectedIds, setNewlyDetectedIds] = useState<string[]>([]);
   const [claimModalTx, setClaimModalTx] = useState<FoundTx | null>(null);
+  const [withdrawalPreview, setWithdrawalPreview] = useState<{
+    txId: string;
+    loading: boolean;
+    quote?: NativeWithdrawalQuote;
+    error?: string;
+  } | null>(null);
   const [ghostTxs, setGhostTxs] = useState<FoundTx[]>([]);
   const [syncingPaused, setSyncingPaused] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
@@ -386,12 +393,12 @@ export function PrivateBalanceView() {
       setWithdrawalSteps([]);
       logPush("wasm", "Reconstructing stealth key and signing claim tx…");
       const amountStr = formatSol(amountRaw);
-      logPush("blockchain", `Claim: ${amountStr} SOL → ${trimmed.slice(0, 10)}…`);
+      logPush("blockchain", `Claim: ${amountStr} XLM → ${trimmed.slice(0, 10)}…`);
       let step3Label = `[Step 3] Sweeping to Destination`;
       const onStatus = (s: { tag: string; label: string; detail?: string }) => {
         if (s.detail?.includes("Sending ")) {
           const m = s.detail.match(/Sending ([\d.]+)/);
-          if (m) step3Label = `[Step 3] Sweeping ${m[1]} SOL to Destination`;
+          if (m) step3Label = `[Step 3] Sweeping ${m[1]} XLM to Destination`;
         }
         setWithdrawalSteps((prev) => {
           const steps: ProtocolStep[] =
@@ -445,7 +452,7 @@ export function PrivateBalanceView() {
           kind: isGhost ? "ghost" : "received",
           counterparty: isGhost ? "Manual Ghost" : tx.address.slice(0, 10) + "…",
           amountLamports: amountRaw.toString(),
-          tokenSymbol: "SOL",
+          tokenSymbol: "XLM",
           tokenAddress: null,
           amount: amountFormatted,
           txHash: withdrawalHash,
@@ -474,8 +481,56 @@ export function PrivateBalanceView() {
         setClaimingId(null);
       }
     },
-    [cluster, pushTx, showToast, keysContext.isSetup, keysContext.getMasterKeys, wasm]
+    [cluster, pushTx, showToast, keysContext.isSetup, keysContext.getMasterKeys, wasm, logPush]
   );
+
+  useEffect(() => {
+    if (!claimModalTx) {
+      setWithdrawalPreview(null);
+      return;
+    }
+    const destination = (destinationByTxId[claimModalTx.id] ?? "").trim();
+    if (!destination || !isAddress(destination)) {
+      setWithdrawalPreview(null);
+      return;
+    }
+    let sourcePublicKey = claimModalTx.stealthStellarAddress;
+    if (!sourcePublicKey && claimModalTx.privateKey) {
+      try {
+        sourcePublicKey = deriveStealthStellarAddressFromStealthPrivKey(
+          hexToBytes(claimModalTx.privateKey as `0x${string}`),
+        );
+      } catch {
+        sourcePublicKey = undefined;
+      }
+    }
+    if (!sourcePublicKey || !StrKey.isValidEd25519PublicKey(sourcePublicKey)) {
+      setWithdrawalPreview({
+        txId: claimModalTx.id,
+        loading: false,
+        error: "Cannot estimate withdrawal from this stealth address.",
+      });
+      return;
+    }
+    let cancelled = false;
+    setWithdrawalPreview({ txId: claimModalTx.id, loading: true });
+    getNativeWithdrawalQuote({ sourcePublicKey, destination })
+      .then((quote) => {
+        if (!cancelled) setWithdrawalPreview({ txId: claimModalTx.id, loading: false, quote });
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setWithdrawalPreview({
+            txId: claimModalTx.id,
+            loading: false,
+            error: err instanceof Error ? err.message : "Could not estimate withdrawal.",
+          });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [claimModalTx, destinationByTxId]);
 
   const handleRetrySync = useCallback(async () => {
     if (cluster == null) return;
@@ -595,7 +650,7 @@ export function PrivateBalanceView() {
       ghostFound.push(ghostTx);
     }
     setGhostTxs(ghostFound);
-  }, [cluster, wasm, keysContext.isSetup, ghostEntries, scanner.ghostBalances]);
+  }, [cluster, wasm, keysContext.isSetup, keysContext.getMasterKeys, ghostEntries, scanner]);
 
   useEffect(() => {
     if (newlyDetectedIds.length === 0) return;
@@ -734,7 +789,7 @@ export function PrivateBalanceView() {
         <div className="space-y-4">
           {/* Total balance */}
           <div className="rounded-2xl border border-ink-700 bg-ink-900/30 p-6">
-            <p className="text-mist text-sm">Total SOL</p>
+            <p className="text-mist text-sm">Total XLM</p>
             <p className="font-display text-2xl font-bold text-white mt-1">
               {formatSol(totalSol)}
             </p>
@@ -745,7 +800,7 @@ export function PrivateBalanceView() {
 
           {/* List of stealth addresses */}
           <h3 className="font-display text-xl font-bold text-white">
-            SOL — Stealth addresses
+            XLM — Stealth addresses
           </h3>
           <div className="space-y-3">
             {allEntries
@@ -783,7 +838,7 @@ export function PrivateBalanceView() {
                           <ExplorerLink cluster={cluster} value={tx.address} type="address" className="text-mist text-xs" />
                         </div>
                         <p className="text-success font-semibold mt-0.5">
-                          {amountStr} SOL
+                          {amountStr} XLM
                         </p>
                         <p className="text-amber-500/90 text-xs mt-1">
                           This address was generated incorrectly and cannot be spent.
@@ -822,7 +877,7 @@ export function PrivateBalanceView() {
                         )}
                       </div>
                       <p className="text-success font-semibold mt-0.5">
-                        {amountStr} SOL
+                        {amountStr} XLM
                       </p>
                     </div>
                     <div className="flex flex-wrap items-center gap-2">
@@ -925,6 +980,7 @@ export function PrivateBalanceView() {
           cluster={cluster}
           claiming={claimingId === claimModalTx.id}
           error={claimError}
+          withdrawalPreview={withdrawalPreview?.txId === claimModalTx.id ? withdrawalPreview : null}
           onDestinationChange={(value: string) => setDestination(claimModalTx.id, value)}
           onConfirm={() =>
             handleClaim(claimModalTx, destinationByTxId[claimModalTx.id] ?? "")

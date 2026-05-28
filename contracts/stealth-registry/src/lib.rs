@@ -76,3 +76,148 @@ impl StealthRegistry {
             .map(|e| e.stealth_meta_address)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
+
+    struct Setup {
+        env: Env,
+        client: StealthRegistryClient<'static>,
+        registrant: Address,
+    }
+
+    fn setup() -> Setup {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, StealthRegistry);
+        let client = StealthRegistryClient::new(&env, &contract_id);
+        let registrant = Address::generate(&env);
+        Setup { env, client, registrant }
+    }
+
+    fn valid_meta_address(env: &Env) -> Bytes {
+        let mut bytes = Bytes::new(env);
+        for _ in 0..66 {
+            bytes.push_back(0x01u8);
+        }
+        bytes
+    }
+
+    #[test]
+    fn test_register_keys_success() {
+        let Setup { env, client, registrant } = setup();
+        let meta = valid_meta_address(&env);
+        let scheme_id: u64 = 1;
+
+        client.register_keys(&registrant, &scheme_id, &meta);
+
+        let resolved = client.resolve(&registrant, &scheme_id);
+        assert_eq!(resolved, Some(meta));
+    }
+
+    #[test]
+    fn test_register_keys_invalid_meta_address_length() {
+        let Setup { env: _env, client, registrant } = setup();
+        let short = Bytes::new(&client.env);
+        let scheme_id: u64 = 1;
+
+        let result = client.try_register_keys(&registrant, &scheme_id, &short);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_register_keys_overwrites_existing() {
+        let Setup { env, client, registrant } = setup();
+        let scheme_id: u64 = 1;
+        let meta_a = valid_meta_address(&env);
+
+        client.register_keys(&registrant, &scheme_id, &meta_a);
+
+        let mut meta_b = Bytes::new(&env);
+        for _ in 0..66 {
+            meta_b.push_back(0x02u8);
+        }
+        client.register_keys(&registrant, &scheme_id, &meta_b);
+
+        let resolved = client.resolve(&registrant, &scheme_id);
+        assert_eq!(resolved, Some(meta_b));
+    }
+
+    #[test]
+    fn test_increment_nonce_from_zero() {
+        let Setup { client, registrant, .. } = setup();
+
+        let nonce = client.increment_nonce(&registrant);
+        assert_eq!(nonce, 1);
+    }
+
+    #[test]
+    fn test_increment_nonce_multiple() {
+        let Setup { client, registrant, .. } = setup();
+
+        assert_eq!(client.increment_nonce(&registrant), 1);
+        assert_eq!(client.increment_nonce(&registrant), 2);
+        assert_eq!(client.increment_nonce(&registrant), 3);
+    }
+
+    #[test]
+    fn test_resolve_not_found() {
+        let Setup { client, registrant, .. } = setup();
+        let stranger = Address::generate(&client.env);
+
+        let result = client.resolve(&stranger, &1u64);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_resolve_different_scheme_ids() {
+        let Setup { env, client, registrant } = setup();
+        let meta = valid_meta_address(&env);
+
+        client.register_keys(&registrant, &1u64, &meta);
+
+        let not_found = client.resolve(&registrant, &2u64);
+        assert_eq!(not_found, None);
+
+        let found = client.resolve(&registrant, &1u64);
+        assert_eq!(found, Some(meta));
+    }
+
+    #[test]
+    fn test_register_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, StealthRegistry);
+        let client = StealthRegistryClient::new(&env, &contract_id);
+        let registrant = Address::generate(&env);
+        let meta = valid_meta_address(&env);
+
+        client.register_keys(&registrant, &1u64, &meta);
+
+        let events = env.events().all();
+        let found = events.iter().any(|e| {
+            e.0 == contract_id && {
+                let topics = e.1.clone();
+                !topics.is_empty()
+            }
+        });
+        assert!(found);
+    }
+
+    #[test]
+    fn test_increment_nonce_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, StealthRegistry);
+        let client = StealthRegistryClient::new(&env, &contract_id);
+        let registrant = Address::generate(&env);
+
+        client.increment_nonce(&registrant);
+
+        let events = env.events().all();
+        let found = events.iter().any(|e| e.0 == contract_id);
+        assert!(found);
+    }
+}

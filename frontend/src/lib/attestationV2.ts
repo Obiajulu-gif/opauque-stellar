@@ -19,7 +19,7 @@ export const ATTESTATION_ENGINE_V2_PROGRAM_ID = ATTESTATION_ENGINE_V2_CONTRACT_I
 export interface AttestationV2 {
   /** On-chain PDA address */
   address: string;
-  /** SHA256(schema_id || issuer || stealth_address_hash || slot) as hex */
+  /** SHA256(schema_id || stealth_address_hash || ledger_sequence || issuance_sequence) as hex */
   uid: string;
   /** SchemaPDA address */
   schemaPda: string;
@@ -39,6 +39,8 @@ export interface AttestationV2 {
   revocationSlot: number;
   /** Optional reference UID as hex (zeros = none) */
   refUid: string;
+  /** Contract-managed per-schema/per-stealth sequence included in UID derivation */
+  issuanceSequence?: number;
   /** Derived: is the attestation currently valid? */
   isValid: boolean;
 }
@@ -141,6 +143,7 @@ export const AttestationV2Schema = z.object({
   expirationSlot: z.number(),
   revocationSlot: z.number(),
   refUid: z.string(),
+  issuanceSequence: z.number().optional(),
   isValid: z.boolean(),
 });
 

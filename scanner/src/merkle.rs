@@ -7,63 +7,57 @@
 //! The tree indexes stealth attestation announcements so the user can produce
 //! a Merkle path for the ZK-attestation circuit without contacting a server.
 
+use num_bigint::BigUint;
+use scalarff::{Bn128FieldElement, FieldElement};
 use serde::{Deserialize, Serialize};
-use sha3::{Digest, Keccak256};
 
 // =============================================================================
-// Poseidon-compatible hash (simplified for WASM; production should use a
-// proper Poseidon implementation matching circomlib's parameters)
+// Circomlib-compatible Poseidon hash over the BN254 scalar field.
 // =============================================================================
-
-/// Hash two field elements with a domain-tagged Keccak256 and reduce mod BN254 scalar field.
-/// In production, replace with an arkworks Poseidon or a hand-optimized Poseidon for BN254.
-///
-/// BN254 scalar field: p = 21888242871839275222246405745257275088548364400416034343698204186575808495617
-const BN254_SCALAR_FIELD: [u8; 32] = [
-    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58,
-    0x5d, 0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00,
-    0x00, 0x01,
-];
 
 fn poseidon_hash_pair(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(b"Poseidon");
-    hasher.update(left);
-    hasher.update(right);
-    let digest: [u8; 32] = hasher.finalize().into();
-    reduce_mod_field(&digest)
+    poseidon_hash_fields(&[*left, *right])
 }
 
 fn poseidon_hash_leaf(data: &[u8]) -> [u8; 32] {
-    let mut hasher = Keccak256::new();
-    hasher.update(b"PoseidonLeaf");
-    hasher.update(data);
-    let digest: [u8; 32] = hasher.finalize().into();
-    reduce_mod_field(&digest)
+    poseidon_hash_fields(&[bytes_to_field(data)])
 }
 
-/// Reduces a 32-byte value modulo the BN254 scalar field via big-endian subtraction.
-/// Simplified: if value >= p, subtract p once. For SNARK-compatible values this is sufficient
-/// since Keccak output is uniformly distributed and p ~ 2^254.
-fn reduce_mod_field(val: &[u8; 32]) -> [u8; 32] {
-    let mut borrow = false;
-    let mut result = [0u8; 32];
-    for i in (0..32).rev() {
-        let a = val[i] as u16;
-        let b = BN254_SCALAR_FIELD[i] as u16 + if borrow { 1 } else { 0 };
-        if a >= b {
-            result[i] = (a - b) as u8;
-            borrow = false;
-        } else {
-            result[i] = (256 + a - b) as u8;
-            borrow = true;
-        }
-    }
-    if borrow {
-        *val
+pub fn poseidon_hash_fields(inputs: &[[u8; 32]]) -> [u8; 32] {
+    let fields = inputs.iter().map(field_from_be_bytes).collect::<Vec<_>>();
+    let hash = poseidon_bn128::poseidon(inputs.len() as u8, &fields)
+        .expect("Poseidon input arity must be supported by circomlib");
+    field_to_be_bytes(hash)
+}
+
+pub fn field_string_to_bytes(input: &str) -> Result<[u8; 32], String> {
+    let trimmed = input.trim();
+    let value = if let Some(hex) = trimmed.strip_prefix("0x") {
+        BigUint::parse_bytes(hex.as_bytes(), 16)
     } else {
-        result
+        BigUint::parse_bytes(trimmed.as_bytes(), 10)
     }
+    .ok_or_else(|| format!("invalid BN254 field element: {input}"))?;
+
+    Ok(field_to_be_bytes(Bn128FieldElement::from_biguint(&value)))
+}
+
+fn bytes_to_field(data: &[u8]) -> [u8; 32] {
+    field_to_be_bytes(Bn128FieldElement::from_biguint(&BigUint::from_bytes_be(
+        data,
+    )))
+}
+
+fn field_from_be_bytes(bytes: &[u8; 32]) -> Bn128FieldElement {
+    Bn128FieldElement::from_biguint(&BigUint::from_bytes_be(bytes))
+}
+
+fn field_to_be_bytes(field: Bn128FieldElement) -> [u8; 32] {
+    let bytes = field.to_biguint().to_bytes_be();
+    let mut out = [0u8; 32];
+    let start = 32usize.saturating_sub(bytes.len());
+    out[start..].copy_from_slice(&bytes[bytes.len().saturating_sub(32)..]);
+    out
 }
 
 // =============================================================================
@@ -121,13 +115,27 @@ impl MerkleTree {
 
     /// Insert a pre-hashed leaf.
     pub fn insert(&mut self, leaf: [u8; 32]) -> usize {
-        assert!(
-            self.leaves.len() < self.capacity(),
-            "Merkle tree is full"
-        );
+        assert!(self.leaves.len() < self.capacity(), "Merkle tree is full");
         let idx = self.leaves.len();
         self.leaves.push(leaf);
         idx
+    }
+
+    pub fn insert_v2_leaf(
+        &mut self,
+        stealth_pk: [u8; 32],
+        schema_id: [u8; 32],
+        issuer_pk_x: [u8; 32],
+        trait_data_hash: [u8; 32],
+        nonce: [u8; 32],
+    ) -> usize {
+        self.insert(poseidon_hash_fields(&[
+            stealth_pk,
+            schema_id,
+            issuer_pk_x,
+            trait_data_hash,
+            nonce,
+        ]))
     }
 
     /// Compute the Merkle root. Recomputes from scratch (acceptable for < 1M leaves in WASM).
@@ -227,6 +235,49 @@ pub struct CircuitWitness {
 mod tests {
     use super::*;
 
+    fn decimal_bytes(value: &str) -> [u8; 32] {
+        field_string_to_bytes(value).unwrap()
+    }
+
+    #[test]
+    fn poseidon_pair_matches_circomlib_vector() {
+        let actual = poseidon_hash_fields(&[decimal_bytes("1"), decimal_bytes("2")]);
+        let expected = decimal_bytes(
+            "7853200120776062878684798364095072458815029376092732009249414926327459813530",
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn zero_hash_level_one_matches_circomlib_vector() {
+        let actual = poseidon_hash_fields(&[decimal_bytes("0"), decimal_bytes("0")]);
+        let expected = decimal_bytes(
+            "14744269619966411208579211824598458697587494354926760081771325075741142829156",
+        );
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn v2_leaf_hash_is_poseidon_five() {
+        let leaf = poseidon_hash_fields(&[
+            decimal_bytes("1"),
+            decimal_bytes("2"),
+            decimal_bytes("3"),
+            decimal_bytes("4"),
+            decimal_bytes("5"),
+        ]);
+        let mut tree = MerkleTree::new(2);
+        let idx = tree.insert_v2_leaf(
+            decimal_bytes("1"),
+            decimal_bytes("2"),
+            decimal_bytes("3"),
+            decimal_bytes("4"),
+            decimal_bytes("5"),
+        );
+        assert_eq!(idx, 0);
+        assert_eq!(tree.leaves[0], leaf);
+    }
+
     #[test]
     fn empty_tree_root_is_deterministic() {
         let t1 = MerkleTree::new(4);
@@ -251,6 +302,27 @@ mod tests {
 
         let proof = tree.proof(1);
         assert!(MerkleTree::verify_proof(&proof));
+    }
+
+    #[test]
+    fn full_path_recomputes_circom_ordered_root() {
+        let mut tree = MerkleTree::new(2);
+        tree.insert(decimal_bytes("1"));
+        tree.insert(decimal_bytes("2"));
+        tree.insert(decimal_bytes("3"));
+
+        let proof = tree.proof(2);
+        let mut current = proof.leaf;
+        for (sibling, index) in proof.path_elements.iter().zip(proof.path_indices.iter()) {
+            current = if *index == 0 {
+                poseidon_hash_fields(&[current, *sibling])
+            } else {
+                poseidon_hash_fields(&[*sibling, current])
+            };
+        }
+
+        assert_eq!(current, tree.root());
+        assert_eq!(current, proof.root);
     }
 
     #[test]

@@ -12,7 +12,11 @@ import { useKeys } from "../context/KeysContext";
 import { registerStealthKeys, SCHEME_ID_SECP256K1 } from "../lib/contracts";
 import { readNativeBalance } from "../lib/readNativeBalance";
 import { hexToBytes, type Hex } from "../lib/stealth";
-import { getConfigForCluster, isClusterSupported } from "../contracts/contract-config";
+import {
+  getConfigForCluster,
+  getNetworkSupportMessage,
+  isClusterSupported,
+} from "../contracts/contract-config";
 import {
   getRememberSignaturePreference,
   loadSignatureSession,
@@ -51,6 +55,16 @@ function extractNestedErrorLines(error: unknown): string[] {
     if (typeof c.message === "string") lines.push(c.message);
   }
   return lines;
+}
+
+function getFundingHint(cluster: string): string {
+  if (cluster === "mainnet") {
+    return "Fund it with mainnet XLM from a trusted Stellar wallet, exchange, or custody flow, then retry.";
+  }
+  if (cluster === "local") {
+    return "Fund it with local network XLM, then retry.";
+  }
+  return "Fund it with test network XLM via Friendbot, then retry.";
 }
 
 export type RegistrationWizardProps = {
@@ -127,13 +141,13 @@ export function RegistrationWizard({ onComplete }: RegistrationWizardProps) {
       } catch {
         const msg =
           `Wallet ${publicKey.slice(0, 6)}…${publicKey.slice(-4)} is not funded on ${cluster}. ` +
-          `Fund it with testnet XLM via Friendbot, then retry.`;
+          getFundingHint(cluster);
         setError(msg);
         setRegisterPhase("idle");
         return;
       }
       if (balance === 0n) {
-        setError(`Wallet has 0 XLM on ${cluster}. Fund via Friendbot before registering.`);
+        setError(`Wallet has 0 XLM on ${cluster}. ${getFundingHint(cluster)}`);
         setRegisterPhase("idle");
         return;
       }
@@ -269,7 +283,7 @@ export function RegistrationWizard({ onComplete }: RegistrationWizardProps) {
                 {wrongCluster && (
                   <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 space-y-2">
                     <p className="text-sm text-amber-200">
-                      Wrong cluster: registration is available on devnet only.
+                      Registration is unavailable for the configured network. {getNetworkSupportMessage(cluster)}
                     </p>
                   </div>
                 )}

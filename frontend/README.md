@@ -36,7 +36,7 @@ Reference wallet for the Opaque protocol on **Stellar**. Built with React, TypeS
 ```bash
 npm install
 cp .env.example .env
-# Set VITE_STELLAR_NETWORK and contract IDs after deploy
+# Set VITE_STELLAR_NETWORK; contract IDs: ../deployments/v1/testnet.json
 npm run dev
 ```
 
@@ -44,11 +44,11 @@ App: `http://localhost:5173`
 
 ### Environment
 
-See `.env.example`. Required after deploying Soroban contracts:
+See `.env.example` and [`../deployments/README.md`](../deployments/README.md).
 
 - `VITE_STELLAR_NETWORK` — `testnet` | `mainnet` | `futurenet` | `local`
-- `VITE_STELLAR_RPC_URL`, `VITE_STELLAR_HORIZON_URL` (optional overrides)
-- `VITE_STEALTH_REGISTRY_CONTRACT`, `VITE_STEALTH_ANNOUNCER_CONTRACT`, etc.
+- Canonical Soroban IDs — [`../deployments/v1/testnet.json`](../deployments/v1/testnet.json) / [`mainnet.json`](../deployments/v1/mainnet.json)
+- `VITE_<NETWORK>_*_CONTRACT` — optional local overrides (non-production only)
 
 ### Production build
 

@@ -11,7 +11,7 @@ import { TermsPage } from "./components/TermsPage.tsx";
 import { DisclaimerPage } from "./components/DisclaimerPage.tsx";
 import { PayPage } from "./components/PayPage.tsx";
 import { PaySuccessPage } from "./components/PaySuccessPage.tsx";
-import { getNetwork } from "./lib/chain.ts";
+import { getConfiguredNetwork, getNetworkEnvValue } from "./lib/chain.ts";
 import { isClusterSupported } from "./contracts/contract-config.ts";
 import { LandingPage } from "./components/LandingPage.tsx";
 import { BrandingPage } from "./components/BrandingPage.tsx";
@@ -19,9 +19,9 @@ import { StellarWalletProviders } from "./context/StellarWalletProviders.tsx";
 
 console.log("[Opaque] App bootstrapping (Stellar)…");
 
-const network = getNetwork();
+const network = getConfiguredNetwork();
 if (!isClusterSupported(network)) {
-  console.warn("[Opaque] Unsupported network:", { network });
+  console.warn("[Opaque] Unsupported network:", { network: getNetworkEnvValue() });
 } else {
   console.log("[Opaque] Network OK", { network });
 }

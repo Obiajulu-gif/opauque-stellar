@@ -193,8 +193,7 @@ pub struct V2StealthAttestation {
     pub data_hex: String,
     /// Nonce used in the Merkle leaf — needed for ZK proof generation
     pub nonce: String,
-    /// Pre-computed Merkle leaf value as hex: Poseidon(stealth_pk, schema_id, issuer_pk_x, data_hash, nonce)
-    /// Computed off-chain; the actual Poseidon must be run in the browser prover.
+    /// Field inputs used to compute Poseidon(stealth_pk, schema_id, issuer_pk_x, data_hash, nonce).
     pub merkle_leaf_preimage: MerkleLeafPreimage,
     /// Transaction hash where this announcement appeared
     pub tx_hash: String,
@@ -386,8 +385,7 @@ pub fn scan_for_attestations_v2(
     let expiration_slot = v2.expiration_ledger as u64;
     let is_valid = expiration_slot == 0 || current_slot < expiration_slot;
 
-    // Step 9: Build the leaf preimage struct for the browser prover.
-    // The actual Poseidon computation happens in JS with poseidon-lite.
+    // Step 9: Build the leaf preimage struct for the circuit witness.
     let stealth_addr_hex = format!("{:#x}", ann.stealth_address);
     let merkle_leaf_preimage = MerkleLeafPreimage {
         stealth_pk_field: "0".to_string(), // caller fills from stealth privkey

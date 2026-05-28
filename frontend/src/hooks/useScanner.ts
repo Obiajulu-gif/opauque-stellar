@@ -205,6 +205,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
         }
       );
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- opts only appears in type annotations
     [cluster]
   );
 
@@ -387,7 +388,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
     return () => {
       cancelled = true;
     };
-  }, [cluster, enabled, publicClient, announcerAddress]);
+  }, [cluster, enabled, publicClient, announcerAddress, runScan]);
 
   const retrySync = useCallback(async () => {
     if (cluster == null) return;
@@ -407,6 +408,8 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
   }, []);
 
   // State-polling: check watchlist + ghost addresses + opaque-ghost-addresses (current chain only)
+  const ghostAddrKey = ghostAddresses.join(",");
+  const watchlistAddrKey = watchlistAddresses.join(",");
   useEffect(() => {
     if (!publicClient || cluster == null) {
       setGhostBalances({});
@@ -467,7 +470,8 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
     return () => {
       cancelled = true;
     };
-  }, [publicClient, cluster, ghostAddresses.join(","), watchlistAddresses.join(",")]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- ghostAddrKey/watchlistAddrKey are stable string proxies for the array deps
+  }, [publicClient, cluster, ghostAddrKey, watchlistAddrKey]);
 
   return {
     announcements,

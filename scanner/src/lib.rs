@@ -195,7 +195,7 @@ use attestation::{
     RawAnnouncement, StealthAttestation as AttestationRecord,
     SchemaInfo, V2StealthAttestation,
 };
-use merkle::{MerkleTree, CircuitWitness};
+use merkle::{field_string_to_bytes, MerkleTree, CircuitWitness};
 
 /// Scans announcement metadata for attestation markers.
 ///
@@ -517,16 +517,35 @@ pub fn generate_reputation_witness_v2(
         .collect();
     let stealth_pk_field = format!("0x{}", privkey_hex);
 
-    // Build Merkle tree from all V2 attestation UIDs
+    let stealth_pk_bytes = field_string_to_bytes(&stealth_pk_field)
+        .map_err(|e| JsValue::from_str(&e))?;
+    let trait_data_hash_bytes = field_string_to_bytes(trait_data_hash_hex)
+        .map_err(|e| JsValue::from_str(&e))?;
+
+    // Build Merkle tree from the same V2 leaf preimage used by the circuit.
     let mut tree = MerkleTree::new(20);
     let mut target_leaf_idx: Option<usize> = None;
 
     for att in &attestations {
-        let leaf_data = format!(
-            "{}:{}:{}",
-            att.stealth_address, att.schema_id, att.attestation_uid
+        let schema_id = field_string_to_bytes(&att.merkle_leaf_preimage.schema_id_field)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let issuer_pk_x = field_string_to_bytes(&att.merkle_leaf_preimage.issuer_pk_x)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let nonce = field_string_to_bytes(&att.merkle_leaf_preimage.nonce_field)
+            .map_err(|e| JsValue::from_str(&e))?;
+        let leaf_trait_data_hash = if att.attestation_uid == target_att.attestation_uid {
+            trait_data_hash_bytes
+        } else {
+            field_string_to_bytes(&att.merkle_leaf_preimage.trait_data_hash)
+                .map_err(|e| JsValue::from_str(&e))?
+        };
+        let idx = tree.insert_v2_leaf(
+            stealth_pk_bytes,
+            schema_id,
+            issuer_pk_x,
+            leaf_trait_data_hash,
+            nonce,
         );
-        let idx = tree.insert_raw(leaf_data.as_bytes());
         if att.attestation_uid == target_att.attestation_uid && target_leaf_idx.is_none() {
             target_leaf_idx = Some(idx);
         }
@@ -551,8 +570,7 @@ pub fn generate_reputation_witness_v2(
         "merkle_root": bytes_to_decimal_string(&proof.root),
         "attestation_id": target_att.merkle_leaf_preimage.schema_id_field,
         "external_nullifier": external_nullifier,
-        // nullifier_hash must be computed by the browser prover:
-        // Poseidon(stealth_pk, external_nullifier) — done in JS with poseidon-lite
+        // nullifier_hash must match Poseidon(stealth_pk, external_nullifier).
         "nullifier_hash": "__COMPUTE_IN_BROWSER__"
     });
 

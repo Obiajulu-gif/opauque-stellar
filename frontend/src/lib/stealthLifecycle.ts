@@ -22,12 +22,14 @@ import {
 import {
   bytesToScVal,
   getHorizonServer,
+  getNativeWithdrawalQuote,
   getSorobanServer,
   invokeContractWithKeypair,
   sendNativePayment,
   u64ToScVal,
 } from "./stellar";
 import { deployedAddresses } from "../contracts/deployedAddresses";
+import { recordContractCall, recordScannerSync, recordRpcError } from "./monitoring";
 
 export interface StealthLifecycleWasm {
   check_announcement_view_tag_wasm: (
@@ -114,6 +116,7 @@ export class StealthScanner {
   }
 
   async updateVault(): Promise<void> {
+    const startTime = Date.now();
     this.setProgress({ status: "syncing", error: null });
     const keys = this.getKeys();
     try {
@@ -123,8 +126,23 @@ export class StealthScanner {
       await this.fetchEvents(start, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
       this.lastLedger = latest.sequence;
       this.setProgress({ status: "watching", lastProcessedLedger: latest.sequence, error: null });
+      recordScannerSync({
+        success: true,
+        durationMs: Date.now() - startTime,
+        fromLedger: start,
+        toLedger: latest.sequence,
+        announcementsFound: 0,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      recordScannerSync({
+        success: false,
+        durationMs: Date.now() - startTime,
+        fromLedger: 0,
+        toLedger: 0,
+        announcementsFound: 0,
+        error: msg,
+      });
       this.setProgress({ status: "error", error: msg });
       throw err;
     }
@@ -152,12 +170,21 @@ export class StealthScanner {
       const server = getSorobanServer();
       const latest = await server.getLatestLedger();
       if (latest.sequence > this.lastLedger) {
-        await this.fetchEvents(this.lastLedger + 1, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
+        const eventsStart = this.lastLedger + 1;
+        await this.fetchEvents(eventsStart, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
         this.lastLedger = latest.sequence;
         this.setProgress({ lastProcessedLedger: latest.sequence });
+        recordScannerSync({
+          success: true,
+          durationMs: Date.now(),
+          fromLedger: eventsStart,
+          toLedger: latest.sequence,
+          announcementsFound: 0,
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      recordRpcError({ provider: "Soroban RPC", method: "pollOnce", error: msg });
       this.setProgress({ status: "error", error: msg });
     }
   }
@@ -420,35 +447,39 @@ export async function executeStealthWithdrawal(
 
   onStatus({ tag: "CALC", label: "Checking stealth balance", detail: from.slice(0, 8) + "…" });
 
-  const horizon = getHorizonServer();
-  let stroops = 0n;
+  let quote: Awaited<ReturnType<typeof getNativeWithdrawalQuote>>;
   try {
-    const account = await horizon.loadAccount(from);
-    const native = account.balances.find((b) => b.asset_type === "native");
-    stroops = BigInt(
-      Math.round(parseFloat((native as { balance: string })?.balance ?? "0") * 1e7),
-    );
+    quote = await getNativeWithdrawalQuote({
+      sourcePublicKey: from,
+      destination: destination.trim(),
+    });
   } catch {
     throw new Error("Stealth account has zero balance or does not exist.");
   }
 
-  const feeBuffer = 100_000n;
-  if (stroops <= feeBuffer) {
-    throw new Error("Insufficient balance to cover network fee.");
+  if (quote.spendableStroops <= 0n) {
+    throw new Error(
+      `Insufficient balance. Retained ${formatSol(
+        quote.minimumBalanceStroops,
+      )} XLM reserve and ${formatSol(quote.feeStroops)} XLM fee.`,
+    );
   }
-  const sendStroops = stroops - feeBuffer;
 
   onStatus({
     tag: "SIGN",
     label: "Sweeping XLM",
-    detail: `${formatSol(sendStroops)} XLM`,
+    detail: `${formatSol(quote.spendableStroops)} XLM via ${
+      quote.destinationExists ? "payment" : "create-account"
+    }; retained ${formatSol(quote.minimumBalanceStroops)} reserve + ${formatSol(quote.feeStroops)} fee`,
   });
 
   onStatus({ tag: "SEND", label: "Broadcasting payment" });
   const hash = await sendNativePayment({
     sourceKeypair: stealthKeypair,
     destination: destination.trim(),
-    amountStroops: sendStroops,
+    amountStroops: quote.spendableStroops,
+    destinationExists: quote.destinationExists,
+    feeStroops: quote.feeStroops,
   });
 
   onStatus({ tag: "DONE", label: "Sweep complete", detail: hash });

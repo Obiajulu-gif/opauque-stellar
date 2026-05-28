@@ -1,14 +1,17 @@
 import type { ReactNode } from "react";
-import { getCluster } from "../lib/chain";
-import { isClusterSupported } from "../contracts/contract-config";
+import { getConfiguredNetwork, getNetworkEnvValue } from "../lib/chain";
+import {
+  getNetworkSupportMessage,
+  isClusterSupported,
+} from "../contracts/contract-config";
 
 type NetworkGuardProps = {
   children: ReactNode;
 };
 
 export function NetworkGuard({ children }: NetworkGuardProps) {
-  const cluster = getCluster();
-  const showUnsupported = !isClusterSupported(cluster);
+  const network = getConfiguredNetwork();
+  const showUnsupported = !isClusterSupported(network);
 
   if (!showUnsupported) {
     return <>{children}</>;
@@ -29,7 +32,11 @@ export function NetworkGuard({ children }: NetworkGuardProps) {
               Unsupported cluster
             </h2>
             <p className="text-sm text-neutral-400">
-              Opaque supports testnet only. Set VITE_STELLAR_NETWORK=testnet in your environment to continue.
+              Configured network{" "}
+              <span className="font-mono text-white">{getNetworkEnvValue()}</span> is not available.
+            </p>
+            <p className="mt-2 text-sm text-neutral-400">
+              {getNetworkSupportMessage(network)}
             </p>
           </div>
         </div>

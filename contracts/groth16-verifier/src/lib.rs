@@ -2,7 +2,7 @@
 use soroban_sdk::{contract, contracterror, contractimpl, contracttype, BytesN, Env, Vec};
 use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr};
 
-/// On-chain Groth16 verifier using Stellar's BN254 host functions (CAP-74).
+/// On-chain Groth16 verifier using Stellar's supported BN254 host functions.
 #[contract]
 pub struct Groth16Verifier;
 
@@ -520,4 +520,3 @@ mod test {
         assert_eq!(res, Err(Ok(VerifierError::InvalidPublicSignal)));
     }
 }
-

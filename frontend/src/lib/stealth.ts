@@ -19,9 +19,36 @@ import { formatXlm } from "./stellar";
 
 const CURVE = secp256k1;
 const DOMAIN = "opaque-cash-v1";
+const PROTOCOL_VERSION = "1";
 
 // Hex string type for compatibility
 export type Hex = `0x${string}`;
+
+export type DomainSeparationOpts = {
+  origin: string;
+  networkPassphrase: string;
+  walletPublicKey: string;
+  purpose: string;
+};
+
+export function buildDomainSeparatedMessage(opts: DomainSeparationOpts): string {
+  return [
+    `--- Opaque Protocol Key Derivation ---`,
+    `App: Opaque Stellar`,
+    `Origin: ${opts.origin}`,
+    `Network: ${opts.networkPassphrase}`,
+    `Wallet: ${opts.walletPublicKey}`,
+    `Version: ${PROTOCOL_VERSION}`,
+    `Purpose: ${opts.purpose}`,
+    ``,
+    `Warning: Signing this message authorizes key derivation for the Opaque protocol.`,
+    `This is not a transaction and does not move funds.`,
+    `Do not sign this message on untrusted sites or applications.`,
+  ].join("\n");
+}
+
+export const LEGACY_SETUP_MESSAGE =
+  "Sign this message to derive your Opaque Cash stealth keys on Stellar. This is not a transaction and does not move funds.";
 
 // -----------------------------------------------------------------------------
 // Key derivation from wallet signature (entropy)
