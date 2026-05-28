@@ -57,10 +57,19 @@ jobs:
           node scripts/verify-deployment-manifest.mjs --network testnet
           cd frontend && npm run verify:deployment
 
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npx tsc -b --noEmit
+
       - name: Typecheck and build
         env:
           VITE_STELLAR_NETWORK: testnet
         run: npm run build
+
+      - name: Run unit tests
+        run: npx vitest run --reporter=verbose
 
   contracts:
     name: Soroban contracts

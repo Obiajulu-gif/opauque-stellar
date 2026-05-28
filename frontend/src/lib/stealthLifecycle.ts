@@ -29,6 +29,7 @@ import {
   u64ToScVal,
 } from "./stellar";
 import { deployedAddresses } from "../contracts/deployedAddresses";
+import { recordContractCall, recordScannerSync, recordRpcError } from "./monitoring";
 
 export interface StealthLifecycleWasm {
   check_announcement_view_tag_wasm: (
@@ -115,6 +116,7 @@ export class StealthScanner {
   }
 
   async updateVault(): Promise<void> {
+    const startTime = Date.now();
     this.setProgress({ status: "syncing", error: null });
     const keys = this.getKeys();
     try {
@@ -124,8 +126,23 @@ export class StealthScanner {
       await this.fetchEvents(start, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
       this.lastLedger = latest.sequence;
       this.setProgress({ status: "watching", lastProcessedLedger: latest.sequence, error: null });
+      recordScannerSync({
+        success: true,
+        durationMs: Date.now() - startTime,
+        fromLedger: start,
+        toLedger: latest.sequence,
+        announcementsFound: 0,
+      });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      recordScannerSync({
+        success: false,
+        durationMs: Date.now() - startTime,
+        fromLedger: 0,
+        toLedger: 0,
+        announcementsFound: 0,
+        error: msg,
+      });
       this.setProgress({ status: "error", error: msg });
       throw err;
     }
@@ -153,12 +170,21 @@ export class StealthScanner {
       const server = getSorobanServer();
       const latest = await server.getLatestLedger();
       if (latest.sequence > this.lastLedger) {
-        await this.fetchEvents(this.lastLedger + 1, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
+        const eventsStart = this.lastLedger + 1;
+        await this.fetchEvents(eventsStart, latest.sequence, keys.viewPrivKey, keys.spendPubKey);
         this.lastLedger = latest.sequence;
         this.setProgress({ lastProcessedLedger: latest.sequence });
+        recordScannerSync({
+          success: true,
+          durationMs: Date.now(),
+          fromLedger: eventsStart,
+          toLedger: latest.sequence,
+          announcementsFound: 0,
+        });
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      recordRpcError({ provider: "Soroban RPC", method: "pollOnce", error: msg });
       this.setProgress({ status: "error", error: msg });
     }
   }

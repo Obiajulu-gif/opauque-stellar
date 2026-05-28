@@ -16,6 +16,7 @@ import {
   Address,
 } from "@stellar/stellar-sdk";
 import { getHorizonUrls, getNetworkPassphrase, getRpcUrls } from "./chain";
+import { recordContractCall, recordRpcError } from "./monitoring";
 
 export function getSorobanServer(): rpc.Server {
   const urls = getRpcUrls();
@@ -126,33 +127,51 @@ export async function invokeContractMethod(opts: {
   args: xdr.ScVal[];
   signTransaction: SignTxFn;
 }): Promise<string> {
+  const startTime = Date.now();
   const server = getSorobanServer();
   const passphrase = getNetworkPassphrase();
-  const source = await server.getAccount(opts.sourcePublicKey);
-  const contract = new Contract(opts.contractId);
-  let tx = new TransactionBuilder(source, {
-    fee: BASE_FEE,
-    networkPassphrase: passphrase,
-  })
-    .addOperation(contract.call(opts.method, ...opts.args))
-    .setTimeout(180)
-    .build();
-  tx = await server.prepareTransaction(tx);
-  const signedXdr = await opts.signTransaction(tx.toXDR());
-  const signed = TransactionBuilder.fromXDR(signedXdr, passphrase);
-  const send = await server.sendTransaction(signed);
-  if (send.status === "ERROR") {
-    throw new Error(`Transaction failed: ${JSON.stringify(send)}`);
+  try {
+    const source = await server.getAccount(opts.sourcePublicKey);
+    const contract = new Contract(opts.contractId);
+    let tx = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: passphrase,
+    })
+      .addOperation(contract.call(opts.method, ...opts.args))
+      .setTimeout(180)
+      .build();
+    tx = await server.prepareTransaction(tx);
+    const signedXdr = await opts.signTransaction(tx.toXDR());
+    const signed = TransactionBuilder.fromXDR(signedXdr, passphrase);
+    const send = await server.sendTransaction(signed);
+    if (send.status === "ERROR") {
+      throw new Error(`Transaction failed: ${JSON.stringify(send)}`);
+    }
+    let txResponse = await server.getTransaction(send.hash);
+    while (txResponse.status === "NOT_FOUND") {
+      await new Promise((r) => setTimeout(r, 1000));
+      txResponse = await server.getTransaction(send.hash);
+    }
+    if (txResponse.status !== "SUCCESS") {
+      throw new Error(`Transaction ${send.status}: ${JSON.stringify(txResponse)}`);
+    }
+    recordContractCall({
+      contractId: opts.contractId,
+      method: opts.method,
+      success: true,
+      durationMs: Date.now() - startTime,
+    });
+    return send.hash;
+  } catch (err) {
+    recordContractCall({
+      contractId: opts.contractId,
+      method: opts.method,
+      success: false,
+      durationMs: Date.now() - startTime,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
-  let txResponse = await server.getTransaction(send.hash);
-  while (txResponse.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    txResponse = await server.getTransaction(send.hash);
-  }
-  if (txResponse.status !== "SUCCESS") {
-    throw new Error(`Transaction ${send.status}: ${JSON.stringify(txResponse)}`);
-  }
-  return send.hash;
 }
 
 export function addressToScVal(addr: string): xdr.ScVal {
@@ -333,32 +352,50 @@ export async function invokeContractWithKeypair(opts: {
   method: string;
   args: xdr.ScVal[];
 }): Promise<string> {
+  const startTime = Date.now();
   const server = getSorobanServer();
   const passphrase = getNetworkPassphrase();
-  const source = await server.getAccount(opts.keypair.publicKey());
-  const contract = new Contract(opts.contractId);
-  let tx = new TransactionBuilder(source, {
-    fee: BASE_FEE,
-    networkPassphrase: passphrase,
-  })
-    .addOperation(contract.call(opts.method, ...opts.args))
-    .setTimeout(180)
-    .build();
-  tx = await server.prepareTransaction(tx);
-  tx.sign(opts.keypair);
-  const send = await server.sendTransaction(tx);
-  if (send.status === "ERROR") {
-    throw new Error(`Transaction failed: ${JSON.stringify(send)}`);
+  try {
+    const source = await server.getAccount(opts.keypair.publicKey());
+    const contract = new Contract(opts.contractId);
+    let tx = new TransactionBuilder(source, {
+      fee: BASE_FEE,
+      networkPassphrase: passphrase,
+    })
+      .addOperation(contract.call(opts.method, ...opts.args))
+      .setTimeout(180)
+      .build();
+    tx = await server.prepareTransaction(tx);
+    tx.sign(opts.keypair);
+    const send = await server.sendTransaction(tx);
+    if (send.status === "ERROR") {
+      throw new Error(`Transaction failed: ${JSON.stringify(send)}`);
+    }
+    let txResponse = await server.getTransaction(send.hash);
+    while (txResponse.status === "NOT_FOUND") {
+      await new Promise((r) => setTimeout(r, 1000));
+      txResponse = await server.getTransaction(send.hash);
+    }
+    if (txResponse.status !== "SUCCESS") {
+      throw new Error(`Transaction failed: ${JSON.stringify(txResponse)}`);
+    }
+    recordContractCall({
+      contractId: opts.contractId,
+      method: opts.method,
+      success: true,
+      durationMs: Date.now() - startTime,
+    });
+    return send.hash;
+  } catch (err) {
+    recordContractCall({
+      contractId: opts.contractId,
+      method: opts.method,
+      success: false,
+      durationMs: Date.now() - startTime,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
   }
-  let txResponse = await server.getTransaction(send.hash);
-  while (txResponse.status === "NOT_FOUND") {
-    await new Promise((r) => setTimeout(r, 1000));
-    txResponse = await server.getTransaction(send.hash);
-  }
-  if (txResponse.status !== "SUCCESS") {
-    throw new Error(`Transaction failed: ${JSON.stringify(txResponse)}`);
-  }
-  return send.hash;
 }
 
 export function formatXlm(stroops: bigint): string {
