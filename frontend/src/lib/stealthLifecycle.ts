@@ -22,6 +22,7 @@ import {
 import {
   bytesToScVal,
   getHorizonServer,
+  getNativeWithdrawalQuote,
   getSorobanServer,
   invokeContractWithKeypair,
   sendNativePayment,
@@ -420,35 +421,39 @@ export async function executeStealthWithdrawal(
 
   onStatus({ tag: "CALC", label: "Checking stealth balance", detail: from.slice(0, 8) + "…" });
 
-  const horizon = getHorizonServer();
-  let stroops = 0n;
+  let quote: Awaited<ReturnType<typeof getNativeWithdrawalQuote>>;
   try {
-    const account = await horizon.loadAccount(from);
-    const native = account.balances.find((b) => b.asset_type === "native");
-    stroops = BigInt(
-      Math.round(parseFloat((native as { balance: string })?.balance ?? "0") * 1e7),
-    );
+    quote = await getNativeWithdrawalQuote({
+      sourcePublicKey: from,
+      destination: destination.trim(),
+    });
   } catch {
     throw new Error("Stealth account has zero balance or does not exist.");
   }
 
-  const feeBuffer = 100_000n;
-  if (stroops <= feeBuffer) {
-    throw new Error("Insufficient balance to cover network fee.");
+  if (quote.spendableStroops <= 0n) {
+    throw new Error(
+      `Insufficient balance. Retained ${formatSol(
+        quote.minimumBalanceStroops,
+      )} XLM reserve and ${formatSol(quote.feeStroops)} XLM fee.`,
+    );
   }
-  const sendStroops = stroops - feeBuffer;
 
   onStatus({
     tag: "SIGN",
     label: "Sweeping XLM",
-    detail: `${formatSol(sendStroops)} XLM`,
+    detail: `${formatSol(quote.spendableStroops)} XLM via ${
+      quote.destinationExists ? "payment" : "create-account"
+    }; retained ${formatSol(quote.minimumBalanceStroops)} reserve + ${formatSol(quote.feeStroops)} fee`,
   });
 
   onStatus({ tag: "SEND", label: "Broadcasting payment" });
   const hash = await sendNativePayment({
     sourceKeypair: stealthKeypair,
     destination: destination.trim(),
-    amountStroops: sendStroops,
+    amountStroops: quote.spendableStroops,
+    destinationExists: quote.destinationExists,
+    feeStroops: quote.feeStroops,
   });
 
   onStatus({ tag: "DONE", label: "Sweep complete", detail: hash });

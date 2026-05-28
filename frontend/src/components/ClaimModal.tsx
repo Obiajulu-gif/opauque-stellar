@@ -5,6 +5,7 @@ import { ProtocolStepper } from "./ProtocolStepper";
 import type { ProtocolStep } from "./ProtocolStepper";
 import { ExplorerLink } from "./ExplorerLink";
 import { ModalShell } from "./ModalShell";
+import type { NativeWithdrawalQuote } from "../lib/stellar";
 
 type ClaimModalProps = {
   tx: FoundTx;
@@ -14,6 +15,11 @@ type ClaimModalProps = {
   cluster: string | null;
   claiming: boolean;
   error: string | null;
+  withdrawalPreview: {
+    loading: boolean;
+    quote?: NativeWithdrawalQuote;
+    error?: string;
+  } | null;
   withdrawalSteps?: ProtocolStep[];
   onDestinationChange: (value: string) => void;
   onConfirm: () => void;
@@ -28,6 +34,7 @@ export function ClaimModal({
   cluster,
   claiming,
   error,
+  withdrawalPreview,
   withdrawalSteps = [],
   onDestinationChange,
   onConfirm,
@@ -35,6 +42,7 @@ export function ClaimModal({
 }: ClaimModalProps) {
   const amountRaw = tx.balance;
   const amountStr = formatSol(amountRaw);
+  const quote = withdrawalPreview?.quote;
   const destinationTrimmed = destination.trim();
   const isSameAsMain =
     !!mainWalletAddress &&
@@ -61,8 +69,36 @@ export function ClaimModal({
         <div className="space-y-2 mb-5 p-3 rounded-xl bg-ink-950/30 border border-ink-700 font-mono text-xs text-mist/90">
           <p className="text-slate-200 font-medium">Protocol steps</p>
           <p>1. Reconstruct private key from spend key + shared secret</p>
-          <p>2. Create independent transaction signed by stealth key</p>
-          <p>3. On-chain sender = stealth address, no identity link</p>
+          <p>2. Estimate current fee, reserve, and destination account state</p>
+          <p>3. Sweep with stealth key; create destination account only when needed</p>
+        </div>
+
+        <div className="space-y-1.5 mb-5 p-3 rounded-xl bg-ink-950/30 border border-ink-700 font-mono text-xs text-mist/90">
+          <p className="text-slate-200 font-medium">Withdrawal amount</p>
+          {withdrawalPreview?.loading ? (
+            <p>Estimating spendable balance…</p>
+          ) : quote ? (
+            <>
+              <div className="flex justify-between gap-3">
+                <span>Spendable</span>
+                <span className="text-success">{formatSol(quote.spendableStroops)} {asset.symbol}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Retained reserve</span>
+                <span>{formatSol(quote.minimumBalanceStroops)} {asset.symbol}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Retained fee</span>
+                <span>{formatSol(quote.feeStroops)} {asset.symbol}</span>
+              </div>
+              <div className="flex justify-between gap-3">
+                <span>Destination path</span>
+                <span>{quote.operation === "createAccount" ? "Create account" : "Payment"}</span>
+              </div>
+            </>
+          ) : (
+            <p className="text-warning">{withdrawalPreview?.error ?? "Enter a valid destination to estimate."}</p>
+          )}
         </div>
 
         <div className="mb-4">
@@ -117,7 +153,7 @@ export function ClaimModal({
           <button
             type="button"
             onClick={onConfirm}
-            disabled={claiming || !destinationTrimmed}
+            disabled={claiming || !destinationTrimmed || !quote || quote.spendableStroops <= 0n}
             className={`px-4 py-2 rounded-xl text-sm font-semibold bg-sol-gradient text-white hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed ${claiming ? "loading" : ""}`}
           >
             {claiming ? "Claiming…" : "Confirm"}

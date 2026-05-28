@@ -82,12 +82,11 @@ function hasExplicitMainnetContracts(): boolean {
   );
 }
 
-function hasProductionMainnetRpc(): boolean {
-  const rpcUrl = getEnvValue("VITE_STELLAR_RPC_URL");
-  if (!rpcUrl) return false;
+function isProductionMainnetProviderUrl(rawUrl: string, publicHosts: Set<string>): boolean {
+  if (!rawUrl) return false;
 
   try {
-    const url = new URL(rpcUrl);
+    const url = new URL(rawUrl);
     const host = url.hostname.toLowerCase();
     if (url.protocol !== "https:") return false;
     if (host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0") {
@@ -96,14 +95,27 @@ function hasProductionMainnetRpc(): boolean {
     if (host.includes("testnet") || host.includes("futurenet") || host.includes("local")) {
       return false;
     }
-    return true;
+    return !publicHosts.has(`${url.protocol}//${host}`);
   } catch {
     return false;
   }
 }
 
+function hasProductionMainnetProviders(): boolean {
+  return (
+    isProductionMainnetProviderUrl(
+      getEnvValue("VITE_STELLAR_RPC_URL"),
+      new Set(["https://mainnet.sorobanrpc.com"]),
+    ) &&
+    isProductionMainnetProviderUrl(
+      getEnvValue("VITE_STELLAR_HORIZON_URL"),
+      new Set(["https://horizon.stellar.org"]),
+    )
+  );
+}
+
 export function isMainnetConfigValid(): boolean {
-  return hasExplicitMainnetContracts() && hasProductionMainnetRpc();
+  return hasExplicitMainnetContracts() && hasProductionMainnetProviders();
 }
 
 const STATIC_CONFIG: Partial<Record<StellarNetwork, ClusterProgramConfig>> = {
@@ -139,7 +151,7 @@ export function isClusterSupported(network: StellarNetwork | null | undefined): 
 
 export function getNetworkSupportMessage(network: StellarNetwork | null | undefined): string {
   if (network === "mainnet") {
-    return "Mainnet requires VITE_STELLAR_RPC_URL to point to a production HTTPS RPC endpoint and mainnet contract IDs in deployments/v1/mainnet.json or VITE_MAINNET_* env vars.";
+    return "Mainnet requires production HTTPS VITE_STELLAR_RPC_URL and VITE_STELLAR_HORIZON_URL values plus mainnet contract IDs in deployments/v1/mainnet.json or VITE_MAINNET_* env vars.";
   }
   return `Set VITE_STELLAR_NETWORK to one of: ${SUPPORTED_NETWORKS.join(", ")}.`;
 }
