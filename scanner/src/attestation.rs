@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::scanner::{
     check_announcement_view_tag, derive_stealth_address, StealthAddressError, ViewTagCheck,
 };
+use log::{warn, info};
+use sha2::{Digest, Sha256};
 
 
 // =============================================================================
@@ -360,7 +362,8 @@ pub fn scan_for_attestations_v2(
         let schema = match schemas.iter().find(|s| s.schema_id == v2.schema_id) {
             Some(s) => s,
             None => {
-                // Unknown schema_id — rogue trait, silently ignore
+                // Unknown schema_id — rogue trait, log hash and skip
+                warn!("Rogue trait: unknown schema_id hash {}", short_hash(&v2.schema_id));
                 continue;
             }
         };
@@ -372,6 +375,11 @@ pub fn scan_for_attestations_v2(
 
         // Step 6: Validate the issuer is authorized under this schema
         let issuer_authorized = schema.is_authorized_issuer(&v2.issuer);
+        if !issuer_authorized {
+            // Unauthorized issuer – log hash and skip
+            warn!("Rogue trait: unauthorized issuer hash {}", short_hash(&v2.issuer));
+            continue;
+        }
 
         // Step 7: Optional user-configured trusted issuer allowlist
         let issuer_hex = hex_encode(&v2.issuer);
