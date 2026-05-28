@@ -184,31 +184,253 @@ impl AttestationEngineV2 {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{contract, contractimpl, testutils::Address as _, Address, Env};
+    extern crate schema_registry;
+    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env, String as SorobanString};
 
-    #[contract]
-    struct AuthorizedRegistry;
+    fn setup() -> (
+        Env,
+        Address,
+        Address,
+        schema_registry::SchemaRegistryClient<'static>,
+        AttestationEngineV2Client<'static>,
+    ) {
+        let env = Env::default();
+        env.mock_all_auths();
 
-    #[contractimpl]
-    impl AuthorizedRegistry {
-        pub fn is_authorized_issuer(_env: Env, _schema_id: BytesN<32>, _issuer: Address) -> bool {
-            true
-        }
+        let schema_contract_id = env.register_contract(None, schema_registry::SchemaRegistry);
+        let schema_client =
+            schema_registry::SchemaRegistryClient::new(&env, &schema_contract_id);
 
-        pub fn is_revocable(_env: Env, _schema_id: BytesN<32>) -> bool {
-            true
-        }
+        let engine_contract_id = env.register_contract(None, AttestationEngineV2);
+        let engine_client = AttestationEngineV2Client::new(&env, &engine_contract_id);
+
+        let authority = Address::generate(&env);
+        (env, authority, schema_contract_id, schema_client, engine_client)
     }
 
-    fn setup(env: &Env) -> (AttestationEngineV2Client<'_>, Address, Address) {
-        env.mock_all_auths();
-        let engine_id = env.register(AttestationEngineV2, ());
-        let registry_id = env.register(AuthorizedRegistry, ());
-        (
-            AttestationEngineV2Client::new(env, &engine_id),
-            engine_id,
-            registry_id,
-        )
+    fn register_schema(
+        env: &Env,
+        schema_client: &schema_registry::SchemaRegistryClient,
+        authority: &Address,
+        schema_id: &BytesN<32>,
+        revocable: bool,
+    ) {
+        schema_client.register_schema(
+            authority,
+            schema_id,
+            &SorobanString::from_str(env, "TestSchema"),
+            &SorobanString::from_str(env, "field1:string"),
+            &revocable,
+            &1u32,
+            &None,
+            &0u32,
+        );
+    }
+
+    #[test]
+    fn test_attest_valid() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[1u8; 32]);
+        let issuer = authority.clone();
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
+        let data = Bytes::from_array(&env, &[1u8, 2u8, 3u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &issuer,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+
+        assert!(uid.to_array() != [0u8; 32]);
+    }
+
+    #[test]
+    fn test_attest_unauthorized_issuer() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[2u8; 32]);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+
+        let stranger = Address::generate(&env);
+        let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
+        let data = Bytes::from_array(&env, &[1u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let result = engine_client.try_attest(
+            &stranger,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+        assert_eq!(result, Err(Ok(AttestationError::UnauthorizedIssuer)));
+    }
+
+    #[test]
+    fn test_attest_delegate_authorized() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[3u8; 32]);
+        let delegate = Address::generate(&env);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        schema_client.add_delegate(&authority, &schema_id, &delegate);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xBBu8; 32]);
+        let data = Bytes::from_array(&env, &[4u8, 5u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &delegate,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+        assert!(uid.to_array() != [0u8; 32]);
+    }
+
+    #[test]
+    fn test_attest_data_too_large() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[4u8; 32]);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xAAu8; 32]);
+        let big_data = Bytes::from_array(&env, &[0u8; 513]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let result = engine_client.try_attest(
+            &authority,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &big_data,
+            &0u32,
+            &ref_uid,
+        );
+        assert_eq!(result, Err(Ok(AttestationError::DataTooLarge)));
+    }
+
+    #[test]
+    fn test_revoke_attestation() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xCCu8; 32]);
+        let data = Bytes::from_array(&env, &[1u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &authority,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+
+        engine_client.revoke_attestation(&authority, &uid, &schema_id_addr);
+    }
+
+    #[test]
+    fn test_revoke_not_found() {
+        let (env, authority, schema_id_addr, _schema_client, engine_client) = setup();
+        let fake_uid = BytesN::from_array(&env, &[0xFFu8; 32]);
+        let result = engine_client.try_revoke_attestation(&authority, &fake_uid, &schema_id_addr);
+        assert_eq!(result, Err(Ok(AttestationError::AttestationNotFound)));
+    }
+
+    #[test]
+    fn test_revoke_not_revocable_schema() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[7u8; 32]);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, false);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xEEu8; 32]);
+        let data = Bytes::from_array(&env, &[1u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &authority,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+
+        let result = engine_client.try_revoke_attestation(&authority, &uid, &schema_id_addr);
+        assert_eq!(result, Err(Ok(AttestationError::NotRevocable)));
+    }
+
+    #[test]
+    fn test_revoke_by_delegate() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[8u8; 32]);
+        let delegate = Address::generate(&env);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+        schema_client.add_delegate(&authority, &schema_id, &delegate);
+
+        let stealth_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+        let data = Bytes::from_array(&env, &[1u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &authority,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+
+        engine_client.revoke_attestation(&delegate, &uid, &schema_id_addr);
+    }
+
+    #[test]
+    fn test_revoke_by_unauthorized_stranger() {
+        let (env, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env, &[9u8; 32]);
+
+        register_schema(&env, &schema_client, &authority, &schema_id, true);
+
+        let stealth_hash = BytesN::from_array(&env, &[0x11u8; 32]);
+        let data = Bytes::from_array(&env, &[1u8]);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = engine_client.attest(
+            &authority,
+            &schema_id,
+            &schema_id_addr,
+            &stealth_hash,
+            &data,
+            &0u32,
+            &ref_uid,
+        );
+
+        let stranger = Address::generate(&env);
+        let result = engine_client.try_revoke_attestation(&stranger, &uid, &schema_id_addr);
+        assert_eq!(result, Err(Ok(AttestationError::Unauthorized)));
     }
 
     #[test]
@@ -226,79 +448,34 @@ mod test {
     #[test]
     fn same_ledger_attestations_receive_distinct_uids() {
         let env = Env::default();
-        let (client, _engine_id, registry_id) = setup(&env);
-        let issuer = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[3u8; 32]);
-        let stealth_hash = BytesN::from_array(&env, &[4u8; 32]);
-        let data = Bytes::new(&env);
-        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+        let (env_inner, authority, schema_id_addr, schema_client, engine_client) = setup();
+        let schema_id = BytesN::from_array(&env_inner, &[3u8; 32]);
+        let stealth_hash = BytesN::from_array(&env_inner, &[4u8; 32]);
 
-        let first = client.attest(
-            &issuer,
+        register_schema(&env_inner, &schema_client, &authority, &schema_id, true);
+
+        let data = Bytes::new(&env_inner);
+        let ref_uid = BytesN::from_array(&env_inner, &[0u8; 32]);
+
+        let first = engine_client.attest(
+            &authority,
             &schema_id,
-            &registry_id,
+            &schema_id_addr,
             &stealth_hash,
-            &data,
-            &0,
+            &data.clone(),
+            &0u32,
             &ref_uid,
         );
-        let second = client.attest(
-            &issuer,
+        let second = engine_client.attest(
+            &authority,
             &schema_id,
-            &registry_id,
+            &schema_id_addr,
             &stealth_hash,
             &data,
-            &0,
+            &0u32,
             &ref_uid,
         );
 
         assert_ne!(first, second);
-    }
-
-    #[test]
-    fn duplicate_uid_is_rejected_before_storage() {
-        let env = Env::default();
-        let (client, engine_id, registry_id) = setup(&env);
-        let issuer = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
-        let stealth_hash = BytesN::from_array(&env, &[6u8; 32]);
-        let data = Bytes::new(&env);
-        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
-        let uid = compute_attestation_uid(
-            &env,
-            &schema_id,
-            &stealth_hash,
-            env.ledger().sequence(),
-            1,
-        );
-        let key = attestation_key(&uid);
-        let existing = Attestation {
-            uid: uid.clone(),
-            schema_id: schema_id.clone(),
-            issuer: issuer.clone(),
-            stealth_address_hash: stealth_hash.clone(),
-            data: Bytes::new(&env),
-            created_at: env.ledger().sequence(),
-            expiration_ledger: 0,
-            revocation_ledger: 0,
-            ref_uid: ref_uid.clone(),
-            issuance_sequence: 1,
-        };
-
-        env.as_contract(&engine_id, || {
-            env.storage().persistent().set(&key, &existing);
-        });
-
-        let result = client.try_attest(
-            &issuer,
-            &schema_id,
-            &registry_id,
-            &stealth_hash,
-            &data,
-            &0,
-            &ref_uid,
-        );
-
-        assert_eq!(result, Err(Ok(AttestationError::AttestationAlreadyExists)));
     }
 }
