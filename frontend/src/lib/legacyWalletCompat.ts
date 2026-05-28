@@ -11,7 +11,6 @@ export function useWallet() {
     ...w,
     publicKey: pk
       ? {
-          toBase58: () => pk,
           toBytes: () => new Uint8Array(32),
           toBuffer: () => Buffer.alloc(32),
         }
