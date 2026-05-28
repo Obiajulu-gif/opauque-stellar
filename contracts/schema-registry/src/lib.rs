@@ -1,4 +1,5 @@
 #![no_std]
+use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env,
     String as SorobanString, Symbol, Vec,
@@ -34,6 +35,7 @@ pub enum SchemaError {
     DelegateAlreadyExists = 6,
     DelegateNotFound = 7,
     SchemaAlreadyExists = 8,
+    InvalidExpiryLedger = 9,
 }
 
 fn schema_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -42,6 +44,27 @@ fn schema_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
 
 fn delegate_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(&schema_id.env(), "delegates"), schema_id.clone())
+}
+
+/// Canonical schema ID: SHA-256(authority_bytes || name_utf8 || version_be_u32).
+/// authority_bytes = the 32-byte raw account key of the authority Address.
+/// Frontend and contract must use this exact formula to agree on schema IDs
+/// without a chain round-trip.
+pub fn derive_schema_id(
+    env: &Env,
+    authority_bytes: &BytesN<32>,
+    name: &SorobanString,
+    version: u32,
+) -> BytesN<32> {
+    let mut hasher = Sha256::new();
+    hasher.update(authority_bytes.to_array());
+    // copy name bytes via a stack buffer (name max len = 64, enforced in register_schema)
+    let name_len = name.len() as usize;
+    let mut name_buf = [0u8; 64];
+    name.copy_into_slice(&mut name_buf[..name_len]);
+    hasher.update(&name_buf[..name_len]);
+    hasher.update(version.to_be_bytes());
+    BytesN::from_array(env, &hasher.finalize().into())
 }
 
 #[contractimpl]
@@ -67,6 +90,9 @@ impl SchemaRegistry {
         let skey = schema_key(&schema_id);
         if env.storage().persistent().has(&skey) {
             return Err(SchemaError::SchemaAlreadyExists);
+        }
+        if schema_expiry_ledger != 0 && schema_expiry_ledger <= env.ledger().sequence() {
+            return Err(SchemaError::InvalidExpiryLedger);
         }
         let schema = Schema {
             schema_id: schema_id.clone(),
@@ -208,7 +234,7 @@ impl SchemaRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
 
     fn register(
         env: &Env,
@@ -320,5 +346,85 @@ mod test {
 
         register(&env, &client, &authority, &schema_id, true);
         assert!(client.is_revocable(&schema_id));
+    }
+
+    // --- issue #42: schema expiry validation ---
+
+    #[test]
+    fn test_expiry_zero_is_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[10u8; 32]);
+        // expiry = 0 means no expiry — must succeed regardless of ledger
+        client.register_schema(
+            &authority,
+            &schema_id,
+            &SorobanString::from_str(&env, "NoExpiry"),
+            &SorobanString::from_str(&env, "f:u32"),
+            &false,
+            &1u32,
+            &None,
+            &0u32,
+        );
+        let schema = client.get_schema(&schema_id);
+        assert_eq!(schema.schema_expiry_ledger, 0u32);
+    }
+
+    #[test]
+    fn test_expiry_in_past_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[11u8; 32]);
+        // current ledger sequence is 0 in test env; pass expiry = 0 would mean no-expiry,
+        // so pass 1 but bump the ledger to 2 to make it in the past.
+        env.ledger().with_mut(|li| li.sequence_number = 5);
+        let result = client.try_register_schema(
+            &authority,
+            &schema_id,
+            &SorobanString::from_str(&env, "Stale"),
+            &SorobanString::from_str(&env, "f:u32"),
+            &false,
+            &1u32,
+            &None,
+            &4u32, // 4 <= current ledger 5 → invalid
+        );
+        assert_eq!(result, Err(Ok(SchemaError::InvalidExpiryLedger)));
+    }
+
+    // --- issue #43: canonical schema ID derivation ---
+
+    #[test]
+    fn derive_schema_id_is_deterministic() {
+        let env = Env::default();
+        let authority_bytes = BytesN::from_array(&env, &[42u8; 32]);
+        let name = SorobanString::from_str(&env, "MySchema");
+        let first = derive_schema_id(&env, &authority_bytes, &name, 1);
+        let second = derive_schema_id(&env, &authority_bytes, &name, 1);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn derive_schema_id_differs_by_version() {
+        let env = Env::default();
+        let authority_bytes = BytesN::from_array(&env, &[42u8; 32]);
+        let name = SorobanString::from_str(&env, "MySchema");
+        let v1 = derive_schema_id(&env, &authority_bytes, &name, 1);
+        let v2 = derive_schema_id(&env, &authority_bytes, &name, 2);
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn derive_schema_id_differs_by_name() {
+        let env = Env::default();
+        let authority_bytes = BytesN::from_array(&env, &[42u8; 32]);
+        let a = derive_schema_id(&env, &authority_bytes, &SorobanString::from_str(&env, "Foo"), 1);
+        let b = derive_schema_id(&env, &authority_bytes, &SorobanString::from_str(&env, "Bar"), 1);
+        assert_ne!(a, b);
     }
 }
