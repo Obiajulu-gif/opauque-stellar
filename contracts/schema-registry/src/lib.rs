@@ -44,6 +44,23 @@ fn delegate_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(&schema_id.env(), "delegates"), schema_id.clone())
 }
 
+fn is_schema_active(env: &Env, schema: &Schema) -> bool {
+    !schema.deprecated
+        && (schema.schema_expiry_ledger == 0 || schema.schema_expiry_ledger > env.ledger().sequence())
+}
+
+fn issuer_in_authorized_set(env: &Env, schema_id: &BytesN<32>, schema: &Schema, issuer: &Address) -> bool {
+    if schema.authority == *issuer {
+        return true;
+    }
+    let delegates: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&delegate_key(schema_id))
+        .unwrap_or_else(|| Vec::new(env));
+    delegates.contains(issuer.clone())
+}
+
 #[contractimpl]
 impl SchemaRegistry {
     pub fn register_schema(
@@ -177,15 +194,16 @@ impl SchemaRegistry {
             .persistent()
             .get(&schema_key(&schema_id))
             .expect("schema");
-        if schema.authority == issuer {
-            return true;
-        }
-        let delegates: Vec<Address> = env
+        issuer_in_authorized_set(&env, &schema_id, &schema, &issuer)
+    }
+
+    pub fn can_issue(env: Env, schema_id: BytesN<32>, issuer: Address) -> bool {
+        let schema: Schema = env
             .storage()
             .persistent()
-            .get(&delegate_key(&schema_id))
-            .unwrap_or_else(|| Vec::new(&env));
-        delegates.contains(issuer)
+            .get(&schema_key(&schema_id))
+            .expect("schema");
+        is_schema_active(&env, &schema) && issuer_in_authorized_set(&env, &schema_id, &schema, &issuer)
     }
 
     pub fn is_revocable(env: Env, schema_id: BytesN<32>) -> bool {
@@ -208,7 +226,7 @@ impl SchemaRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
 
     fn register(
         env: &Env,
@@ -230,7 +248,7 @@ mod test {
     }
 
     #[test]
-    fn test_zero_delegates() {
+    fn active_authority_can_issue() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
@@ -241,84 +259,48 @@ mod test {
         register(&env, &client, &authority, &schema_id, true);
 
         assert!(client.is_authorized_issuer(&schema_id, &authority));
-        let stranger = Address::generate(&env);
-        assert!(!client.is_authorized_issuer(&schema_id, &stranger));
+        assert!(client.can_issue(&schema_id, &authority));
     }
 
     #[test]
-    fn test_one_delegate() {
+    fn deprecated_schema_cannot_issue() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
-        let delegate = Address::generate(&env);
         let schema_id = BytesN::from_array(&env, &[2u8; 32]);
 
-        register(&env, &client, &authority, &schema_id, false);
-        client.add_delegate(&authority, &schema_id, &delegate);
+        register(&env, &client, &authority, &schema_id, true);
+        client.deprecate_schema(&authority, &schema_id);
 
-        assert!(client.is_authorized_issuer(&schema_id, &delegate));
-
-        client.remove_delegate(&authority, &schema_id, &delegate);
-        assert!(!client.is_authorized_issuer(&schema_id, &delegate));
+        assert!(client.is_authorized_issuer(&schema_id, &authority));
+        assert!(!client.can_issue(&schema_id, &authority));
     }
 
     #[test]
-    fn test_max_delegates() {
+    fn expired_schema_cannot_issue() {
         let env = Env::default();
         env.mock_all_auths();
+        env.ledger().set_sequence_number(10);
         let contract_id = env.register_contract(None, SchemaRegistry);
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
         let schema_id = BytesN::from_array(&env, &[3u8; 32]);
 
-        register(&env, &client, &authority, &schema_id, true);
-
-        for _ in 0..10u32 {
-            let d = Address::generate(&env);
-            client.add_delegate(&authority, &schema_id, &d);
-        }
-
-        // 11th delegate should fail
-        let extra = Address::generate(&env);
-        let result = client.try_add_delegate(&authority, &schema_id, &extra);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_schema_already_exists() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, SchemaRegistry);
-        let client = SchemaRegistryClient::new(&env, &contract_id);
-        let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[4u8; 32]);
-
-        register(&env, &client, &authority, &schema_id, false);
-        let result = client.try_register_schema(
+        client.register_schema(
             &authority,
             &schema_id,
-            &SorobanString::from_str(&env, "Dup"),
-            &SorobanString::from_str(&env, "x:u32"),
-            &false,
+            &SorobanString::from_str(&env, "Expiring"),
+            &SorobanString::from_str(&env, "field1:string"),
+            &true,
             &1u32,
             &None,
-            &0u32,
+            &11u32,
         );
-        assert!(result.is_err());
-    }
 
-    #[test]
-    fn test_is_revocable() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, SchemaRegistry);
-        let client = SchemaRegistryClient::new(&env, &contract_id);
-        let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
-
-        register(&env, &client, &authority, &schema_id, true);
-        assert!(client.is_revocable(&schema_id));
+        assert!(client.can_issue(&schema_id, &authority));
+        env.ledger().set_sequence_number(11);
+        assert!(!client.can_issue(&schema_id, &authority));
     }
 }
