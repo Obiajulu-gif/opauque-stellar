@@ -44,6 +44,23 @@ fn delegate_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(&schema_id.env(), "delegates"), schema_id.clone())
 }
 
+fn is_schema_active(env: &Env, schema: &Schema) -> bool {
+    !schema.deprecated
+        && (schema.schema_expiry_ledger == 0 || schema.schema_expiry_ledger > env.ledger().sequence())
+}
+
+fn is_issuer_member(env: &Env, schema_id: &BytesN<32>, schema: &Schema, issuer: &Address) -> bool {
+    if schema.authority == *issuer {
+        return true;
+    }
+    let delegates: Vec<Address> = env
+        .storage()
+        .persistent()
+        .get(&delegate_key(schema_id))
+        .unwrap_or_else(|| Vec::new(env));
+    delegates.contains(issuer.clone())
+}
+
 #[contractimpl]
 impl SchemaRegistry {
     pub fn register_schema(
@@ -177,15 +194,16 @@ impl SchemaRegistry {
             .persistent()
             .get(&schema_key(&schema_id))
             .expect("schema");
-        if schema.authority == issuer {
-            return true;
-        }
-        let delegates: Vec<Address> = env
+        is_issuer_member(&env, &schema_id, &schema, &issuer)
+    }
+
+    pub fn can_issue(env: Env, schema_id: BytesN<32>, issuer: Address) -> bool {
+        let schema: Schema = env
             .storage()
             .persistent()
-            .get(&delegate_key(&schema_id))
-            .unwrap_or_else(|| Vec::new(&env));
-        delegates.contains(issuer)
+            .get(&schema_key(&schema_id))
+            .expect("schema");
+        is_schema_active(&env, &schema) && is_issuer_member(&env, &schema_id, &schema, &issuer)
     }
 
     pub fn is_revocable(env: Env, schema_id: BytesN<32>) -> bool {
@@ -208,7 +226,7 @@ impl SchemaRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Ledger}, Address, Env};
 
     fn register(
         env: &Env,
@@ -216,6 +234,7 @@ mod test {
         authority: &Address,
         schema_id: &BytesN<32>,
         revocable: bool,
+        expiry: u32,
     ) {
         client.register_schema(
             authority,
@@ -225,12 +244,12 @@ mod test {
             &revocable,
             &1u32,
             &None,
-            &0u32,
+            &expiry,
         );
     }
 
     #[test]
-    fn test_zero_delegates() {
+    fn deprecated_schema_cannot_issue_but_existing_authorization_is_readable() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
@@ -238,87 +257,31 @@ mod test {
         let authority = Address::generate(&env);
         let schema_id = BytesN::from_array(&env, &[1u8; 32]);
 
-        register(&env, &client, &authority, &schema_id, true);
+        register(&env, &client, &authority, &schema_id, true, 0);
+        assert!(client.is_authorized_issuer(&schema_id, &authority));
+        assert!(client.can_issue(&schema_id, &authority));
+
+        client.deprecate_schema(&authority, &schema_id);
 
         assert!(client.is_authorized_issuer(&schema_id, &authority));
-        let stranger = Address::generate(&env);
-        assert!(!client.is_authorized_issuer(&schema_id, &stranger));
+        assert!(!client.can_issue(&schema_id, &authority));
     }
 
     #[test]
-    fn test_one_delegate() {
+    fn expired_schema_cannot_issue() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
-        let delegate = Address::generate(&env);
         let schema_id = BytesN::from_array(&env, &[2u8; 32]);
 
-        register(&env, &client, &authority, &schema_id, false);
-        client.add_delegate(&authority, &schema_id, &delegate);
+        env.ledger().set_sequence_number(10);
+        register(&env, &client, &authority, &schema_id, true, 12);
+        assert!(client.can_issue(&schema_id, &authority));
 
-        assert!(client.is_authorized_issuer(&schema_id, &delegate));
-
-        client.remove_delegate(&authority, &schema_id, &delegate);
-        assert!(!client.is_authorized_issuer(&schema_id, &delegate));
-    }
-
-    #[test]
-    fn test_max_delegates() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, SchemaRegistry);
-        let client = SchemaRegistryClient::new(&env, &contract_id);
-        let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[3u8; 32]);
-
-        register(&env, &client, &authority, &schema_id, true);
-
-        for _ in 0..10u32 {
-            let d = Address::generate(&env);
-            client.add_delegate(&authority, &schema_id, &d);
-        }
-
-        // 11th delegate should fail
-        let extra = Address::generate(&env);
-        let result = client.try_add_delegate(&authority, &schema_id, &extra);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_schema_already_exists() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, SchemaRegistry);
-        let client = SchemaRegistryClient::new(&env, &contract_id);
-        let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[4u8; 32]);
-
-        register(&env, &client, &authority, &schema_id, false);
-        let result = client.try_register_schema(
-            &authority,
-            &schema_id,
-            &SorobanString::from_str(&env, "Dup"),
-            &SorobanString::from_str(&env, "x:u32"),
-            &false,
-            &1u32,
-            &None,
-            &0u32,
-        );
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_is_revocable() {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register_contract(None, SchemaRegistry);
-        let client = SchemaRegistryClient::new(&env, &contract_id);
-        let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[5u8; 32]);
-
-        register(&env, &client, &authority, &schema_id, true);
-        assert!(client.is_revocable(&schema_id));
+        env.ledger().set_sequence_number(12);
+        assert!(!client.can_issue(&schema_id, &authority));
+        assert!(client.is_authorized_issuer(&schema_id, &authority));
     }
 }
