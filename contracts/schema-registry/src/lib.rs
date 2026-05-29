@@ -8,6 +8,10 @@ use soroban_sdk::{
 #[contract]
 pub struct SchemaRegistry;
 
+/// Current event schema version — increment when the event topic/data layout changes.
+/// Scanners should reject events with an unrecognised version rather than misparse them.
+const EVENT_VERSION: u32 = 1;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct Schema {
@@ -116,7 +120,7 @@ impl SchemaRegistry {
             .persistent()
             .set(&delegate_key(&schema_id), &Vec::<Address>::new(&env));
         env.events().publish(
-            (Symbol::new(&env, "SchemaRegistered"),),
+            (Symbol::new(&env, "SchemaRegistered"), EVENT_VERSION),
             (schema_id, authority, name),
         );
         Ok(())

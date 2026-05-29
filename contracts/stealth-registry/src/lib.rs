@@ -6,6 +6,10 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 #[contract]
 pub struct StealthRegistry;
 
+/// Current event schema version — increment when the event topic/data layout changes.
+/// Scanners should reject events with an unrecognised version rather than misparse them.
+const EVENT_VERSION: u32 = 1;
+
 #[contracttype]
 #[derive(Clone)]
 pub struct RegistryEntry {
@@ -50,7 +54,7 @@ impl StealthRegistry {
             .persistent()
             .set(&registry_key(&registrant, scheme_id), &entry);
         env.events().publish(
-            (Symbol::new(&env, "StealthMetaAddressSet"),),
+            (Symbol::new(&env, "StealthMetaAddressSet"), EVENT_VERSION),
             (registrant, scheme_id, stealth_meta_address),
         );
         Ok(())
@@ -63,7 +67,7 @@ impl StealthRegistry {
         let new_nonce = nonce.saturating_add(1);
         env.storage().persistent().set(&key, &new_nonce);
         env.events().publish(
-            (Symbol::new(&env, "NonceIncremented"),),
+            (Symbol::new(&env, "NonceIncremented"), EVENT_VERSION),
             (registrant.clone(), new_nonce),
         );
         new_nonce
@@ -80,7 +84,7 @@ impl StealthRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Bytes, Env};
+    use soroban_sdk::{testutils::{Address as _, Events as _}, Address, Bytes, Env};
 
     struct Setup {
         env: Env,

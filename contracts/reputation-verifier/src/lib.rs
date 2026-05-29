@@ -4,6 +4,10 @@ use soroban_sdk::{contract, contracterror, contractimpl, contracttype, Address, 
 const ROOT_EXPIRY_LEDGERS: u32 = 17_280; // ~1 day at 5s/ledger
 const MAX_ROOT_HISTORY: u32 = 100;
 
+/// Current event schema version — increment when the event topic/data layout changes.
+/// Scanners should reject events with an unrecognised version rather than misparse them.
+const EVENT_VERSION: u32 = 1;
+
 #[contract]
 pub struct ReputationVerifier;
 
@@ -108,7 +112,7 @@ impl ReputationVerifier {
         env.storage().instance().set(&history_key(&env), &history);
 
         env.events().publish(
-            (Symbol::new(&env, "MerkleRootPublished"),),
+            (Symbol::new(&env, "MerkleRootPublished"), EVENT_VERSION),
             (root.clone(), ledger, dataset_hash, admin),
         );
         Ok(())
@@ -209,7 +213,7 @@ impl ReputationVerifier {
             .set(&nullifier_key(&nullifier), &NullifierEntry { used: true });
 
         env.events().publish(
-            (Symbol::new(&env, "ReputationVerified"),),
+            (Symbol::new(&env, "ReputationVerified"), EVENT_VERSION),
             (attestation_id, nullifier, user, root),
         );
         Ok(())
