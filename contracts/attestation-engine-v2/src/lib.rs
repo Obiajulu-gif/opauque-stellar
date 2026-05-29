@@ -237,6 +237,23 @@ impl AttestationEngineV2 {
         Ok(())
     }
 
+    /// Issues an attestation binding a stealth address to a schema-bound trait.
+    ///
+    /// # Issuer Encoding (see ISSUER_ENCODING.md)
+    /// The `issuer` parameter is a Soroban Address representing a Stellar Ed25519 public key.
+    /// The contract stores issuer as-is (Address type) and validates authorization by comparing
+    /// against the schema authority and registered delegates.
+    ///
+    /// # Arguments
+    /// * `issuer` - Stellar Ed25519 address (must be authorized for this schema)
+    /// * `schema_id` - Schema identifier [u8; 32]
+    /// * `stealth_address_hash` - Hash of the stealth address receiving the attestation
+    /// * `data` - ABI-encoded attestation data (validated against schema field definitions)
+    /// * `expiration_ledger` - Ledger number at which this attestation expires (0 = never)
+    /// * `ref_uid` - Reference UID for linking related attestations
+    ///
+    /// # Returns
+    /// The attestation UID (deterministic hash of schema_id, stealth_hash, ledger, sequence)
     pub fn attest(
         env: Env,
         issuer: Address,
