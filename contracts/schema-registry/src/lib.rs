@@ -120,8 +120,12 @@ impl SchemaRegistry {
         if delegates.contains(delegate.clone()) {
             return Err(SchemaError::DelegateAlreadyExists);
         }
-        delegates.push_back(delegate);
+        delegates.push_back(delegate.clone());
         env.storage().persistent().set(&dkey, &delegates);
+        env.events().publish(
+            (Symbol::new(&env, "DelegateAdded"),),
+            (schema_id, authority, delegate),
+        );
         Ok(())
     }
 
@@ -143,7 +147,7 @@ impl SchemaRegistry {
             .persistent()
             .get(&dkey)
             .unwrap_or_else(|| Vec::new(&env));
-        let pos = delegates.first_index_of(delegate);
+        let pos = delegates.first_index_of(delegate.clone());
         let idx = pos.ok_or(SchemaError::DelegateNotFound)?;
         let mut updated = Vec::new(&env);
         for i in 0..delegates.len() {
@@ -152,6 +156,10 @@ impl SchemaRegistry {
             }
         }
         env.storage().persistent().set(&dkey, &updated);
+        env.events().publish(
+            (Symbol::new(&env, "DelegateRemoved"),),
+            (schema_id, authority, delegate),
+        );
         Ok(())
     }
 
@@ -208,7 +216,7 @@ impl SchemaRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use soroban_sdk::{testutils::{Address as _, Events}, Address, Env};
 
     fn register(
         env: &Env,
@@ -265,6 +273,46 @@ mod test {
     }
 
     #[test]
+    fn test_authority_can_remove_delegate_and_emit_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let delegate = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[8u8; 32]);
+
+        register(&env, &client, &authority, &schema_id, true);
+        client.add_delegate(&authority, &schema_id, &delegate);
+        let before = env.events().all().len();
+
+        client.remove_delegate(&authority, &schema_id, &delegate);
+
+        assert!(!client.is_authorized_issuer(&schema_id, &delegate));
+        assert!(env.events().all().len() > before);
+    }
+
+    #[test]
+    fn test_non_authority_cannot_remove_delegate() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let non_authority = Address::generate(&env);
+        let delegate = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[9u8; 32]);
+
+        register(&env, &client, &authority, &schema_id, true);
+        client.add_delegate(&authority, &schema_id, &delegate);
+
+        let result = client.try_remove_delegate(&non_authority, &schema_id, &delegate);
+
+        assert_eq!(result, Err(Ok(SchemaError::Unauthorized)));
+        assert!(client.is_authorized_issuer(&schema_id, &delegate));
+    }
+
+    #[test]
     fn test_max_delegates() {
         let env = Env::default();
         env.mock_all_auths();
@@ -280,7 +328,6 @@ mod test {
             client.add_delegate(&authority, &schema_id, &d);
         }
 
-        // 11th delegate should fail
         let extra = Address::generate(&env);
         let result = client.try_add_delegate(&authority, &schema_id, &extra);
         assert!(result.is_err());
