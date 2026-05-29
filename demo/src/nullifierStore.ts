@@ -1,43 +1,51 @@
 /**
- * Nullifier Store — localStorage-backed set of consumed nullifier hashes.
+ * Shared Nullifier Store — verifier-service backed nullifier consumption.
  *
- * In production replace this with an on-chain nullifier registry (e.g. the
- * Groth16 Verifier program's verify_proof_v2 instruction already enforces
- * uniqueness on-chain when called with the Stellar wallet path).
- *
- * For this standalone demo we persist nullifiers in localStorage so that:
- *   1. The same proof cannot be used twice in the same browser.
- *   2. The check survives page reloads.
+ * This demo intentionally does not trust browser localStorage for replay
+ * protection. A public gate must call a shared backend, signed verifier service,
+ * or on-chain nullifier registry so a consumed nullifier is rejected across
+ * browsers, devices, and users.
  */
 
 import { DEMO_CONFIG } from "./config";
 
-function load(): Set<string> {
-  try {
-    const raw = localStorage.getItem(DEMO_CONFIG.NULLIFIER_STORE_KEY);
-    if (!raw) return new Set();
-    const arr = JSON.parse(raw) as string[];
-    return new Set(arr);
-  } catch {
-    return new Set();
+export interface NullifierConsumeResult {
+  consumed: boolean;
+  reason?: string;
+}
+
+async function postNullifier(nullifierHash: string): Promise<NullifierConsumeResult> {
+  const response = await fetch(DEMO_CONFIG.NULLIFIER_API_URL, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ nullifierHash: nullifierHash.toLowerCase() }),
+  });
+
+  if (response.status === 409) {
+    return { consumed: false, reason: "This proof has already been used." };
   }
+
+  if (!response.ok) {
+    return {
+      consumed: false,
+      reason: `Nullifier service rejected the request (${response.status}).`,
+    };
+  }
+
+  const body = await response.json().catch(() => ({}));
+  return {
+    consumed: body.consumed !== false,
+    reason: typeof body.reason === "string" ? body.reason : undefined,
+  };
 }
 
-function save(set: Set<string>): void {
-  localStorage.setItem(
-    DEMO_CONFIG.NULLIFIER_STORE_KEY,
-    JSON.stringify(Array.from(set))
-  );
-}
-
-/** Returns true if this nullifierHash has already been consumed. */
-export function isNullifierUsed(nullifierHash: string): boolean {
-  return load().has(nullifierHash.toLowerCase());
-}
-
-/** Mark a nullifierHash as consumed. */
-export function consumeNullifier(nullifierHash: string): void {
-  const set = load();
-  set.add(nullifierHash.toLowerCase());
-  save(set);
+/**
+ * Atomically consume a nullifier in shared storage.
+ *
+ * The backend must perform this as a single insert-if-absent operation, such as
+ * a database unique constraint or on-chain nullifier set. LocalStorage fallback
+ * is deliberately not provided because it does not protect public gates.
+ */
+export async function consumeNullifier(nullifierHash: string): Promise<NullifierConsumeResult> {
+  return postNullifier(nullifierHash);
 }
