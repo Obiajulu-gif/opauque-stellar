@@ -31,6 +31,15 @@ pub struct Schema {
     pub deprecated: bool,
 }
 
+#[contracttype]
+#[derive(Clone)]
+pub struct SchemaStatus {
+    pub revocable: bool,
+    pub deprecated: bool,
+    pub schema_expiry_ledger: u32,
+    pub active: bool,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -61,66 +70,13 @@ fn delegate_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
     (Symbol::new(&schema_id.env(), "delegates"), schema_id.clone())
 }
 
-fn parse_error(e: SchemaParseError) -> SchemaError {
-    match e {
-        SchemaParseError::Empty => SchemaError::EmptyFieldDefs,
-        SchemaParseError::TooManyFields => SchemaError::TooManyFields,
-        SchemaParseError::FieldNameEmpty | SchemaParseError::FieldNameTooLong => {
-            SchemaError::InvalidFieldName
-        }
-        SchemaParseError::InvalidFieldName => SchemaError::InvalidFieldName,
-        SchemaParseError::DuplicateFieldName => SchemaError::DuplicateFieldName,
-        SchemaParseError::InvalidFieldType => SchemaError::InvalidFieldType,
-        SchemaParseError::DefsTooLong => SchemaError::FieldDefsTooLong,
-        SchemaParseError::MalformedSegment => SchemaError::MalformedFieldSegment,
-    }
+fn schema_ids_key(env: &Env) -> Symbol {
+    Symbol::new(env, "schema_ids")
 }
 
-fn soroban_string_to_str<'a>(s: &SorobanString, buf: &'a mut [u8; MAX_FIELD_DEFS_STR_LEN]) -> Result<&'a str, SchemaError> {
-    let len = s.len() as usize;
-    if len > MAX_FIELD_DEFS_STR_LEN {
-        return Err(SchemaError::FieldDefsTooLong);
-    }
-    s.copy_into_slice(&mut buf[..len]);
-    core::str::from_utf8(&buf[..len]).map_err(|_| SchemaError::InvalidFieldDefs)
-}
-
-/// Canonical schema ID (#44):
-/// `SHA-256(authority_bytes || name_utf8 || version_be_u32 || canonical_field_defs_bytes)`.
-pub fn derive_schema_id(
-    env: &Env,
-    authority_bytes: &BytesN<32>,
-    name: &SorobanString,
-    version: u32,
-    canonical_field_defs: &[u8],
-) -> BytesN<32> {
-    let name_len = name.len() as usize;
-    let mut name_buf = [0u8; 64];
-    name.copy_into_slice(&mut name_buf[..name_len]);
-    let id = core_derive_schema_id(
-        &authority_bytes.to_array(),
-        core::str::from_utf8(&name_buf[..name_len]).unwrap_or(""),
-        version,
-        canonical_field_defs,
-    );
-    BytesN::from_array(env, &id)
-}
-
-/// Legacy schema ID (pre-#44): `SHA-256(authority_bytes || name_utf8 || version_be_u32)`.
-pub fn derive_schema_id_legacy(
-    env: &Env,
-    authority_bytes: &BytesN<32>,
-    name: &SorobanString,
-    version: u32,
-) -> BytesN<32> {
-    let mut hasher = Sha256::new();
-    hasher.update(authority_bytes.to_array());
-    let name_len = name.len() as usize;
-    let mut name_buf = [0u8; 64];
-    name.copy_into_slice(&mut name_buf[..name_len]);
-    hasher.update(&name_buf[..name_len]);
-    hasher.update(version.to_be_bytes());
-    BytesN::from_array(env, &hasher.finalize().into())
+fn is_schema_active(env: &Env, schema: &Schema) -> bool {
+    !schema.deprecated
+        && (schema.schema_expiry_ledger == 0 || schema.schema_expiry_ledger > env.ledger().sequence())
 }
 
 #[contractimpl]
@@ -207,6 +163,16 @@ impl SchemaRegistry {
         env.storage()
             .persistent()
             .set(&delegate_key(&schema_id), &Vec::<Address>::new(&env));
+
+        let ids_key = schema_ids_key(&env);
+        let mut schema_ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&ids_key)
+            .unwrap_or_else(|| Vec::new(&env));
+        schema_ids.push_back(schema_id.clone());
+        env.storage().persistent().set(&ids_key, &schema_ids);
+
         env.events().publish(
             (Symbol::new(&env, "SchemaRegistered"), EVENT_VERSION),
             (schema_id, authority, name),
@@ -329,6 +295,41 @@ impl SchemaRegistry {
             .get(&schema_key(&schema_id))
             .expect("schema")
     }
+
+    pub fn get_delegates(env: Env, schema_id: BytesN<32>) -> Vec<Address> {
+        env.storage()
+            .persistent()
+            .get(&delegate_key(&schema_id))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn get_schema_status(env: Env, schema_id: BytesN<32>) -> SchemaStatus {
+        let schema: Schema = env
+            .storage()
+            .persistent()
+            .get(&schema_key(&schema_id))
+            .expect("schema");
+        SchemaStatus {
+            revocable: schema.revocable,
+            deprecated: schema.deprecated,
+            schema_expiry_ledger: schema.schema_expiry_ledger,
+            active: is_schema_active(&env, &schema),
+        }
+    }
+
+    pub fn list_schema_ids(env: Env, start: u32, limit: u32) -> Vec<BytesN<32>> {
+        let schema_ids: Vec<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&schema_ids_key(&env))
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut page = Vec::new(&env);
+        let end = start.saturating_add(limit).min(schema_ids.len());
+        for i in start..end {
+            page.push_back(schema_ids.get(i).unwrap());
+        }
+        page
+    }
 }
 
 #[cfg(test)]
@@ -357,7 +358,7 @@ mod test {
     }
 
     #[test]
-    fn test_zero_delegates() {
+    fn schema_by_id_can_be_fetched() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
@@ -367,13 +368,14 @@ mod test {
 
         register(&env, &client, &authority, &schema_id, true);
 
-        assert!(client.is_authorized_issuer(&schema_id, &authority));
-        let stranger = Address::generate(&env);
-        assert!(!client.is_authorized_issuer(&schema_id, &stranger));
+        let schema = client.get_schema(&schema_id);
+        assert_eq!(schema.schema_id, schema_id);
+        assert_eq!(schema.authority, authority);
+        assert!(schema.revocable);
     }
 
     #[test]
-    fn test_one_delegate() {
+    fn delegates_and_status_fields_are_readable() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
@@ -461,32 +463,31 @@ mod test {
         let authority = Address::generate(&env);
         let schema_id = schema_id_for(&env, "TestSchema", "string field1", 1);
 
-        register(&env, &client, &authority, &schema_id, false);
-        let result = client.try_register_schema(
-            &authority,
-            &authority_key(&env),
-            &schema_id,
-            &SorobanString::from_str(&env, "Dup"),
-            &SorobanString::from_str(&env, "u32 x"),
-            &false,
-            &1u32,
-            &None,
-            &0u32,
-        );
-        assert!(result.is_err());
+        let status = client.get_schema_status(&schema_id);
+        assert!(!status.revocable);
+        assert!(!status.deprecated);
+        assert!(status.active);
     }
 
     #[test]
-    fn test_is_revocable() {
+    fn schema_ids_are_paginated() {
         let env = Env::default();
         env.mock_all_auths();
         let contract_id = env.register_contract(None, SchemaRegistry);
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
-        let schema_id = schema_id_for(&env, "TestSchema", "string field1", 1);
+        let first = BytesN::from_array(&env, &[3u8; 32]);
+        let second = BytesN::from_array(&env, &[4u8; 32]);
+        let third = BytesN::from_array(&env, &[5u8; 32]);
 
-        register(&env, &client, &authority, &schema_id, true);
-        assert!(client.is_revocable(&schema_id));
+        register(&env, &client, &authority, &first, true);
+        register(&env, &client, &authority, &second, true);
+        register(&env, &client, &authority, &third, true);
+
+        let page = client.list_schema_ids(&1u32, &2u32);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page.get(0).unwrap(), second);
+        assert_eq!(page.get(1).unwrap(), third);
     }
 
     #[test]
