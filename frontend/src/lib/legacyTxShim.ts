@@ -9,9 +9,6 @@ export class PublicKey {
   constructor(key: string) {
     this.key = key;
   }
-  toBase58(): string {
-    return this.key;
-  }
   toBuffer(): Buffer {
     return Buffer.alloc(32);
   }

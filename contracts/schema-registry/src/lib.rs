@@ -1,4 +1,9 @@
 #![no_std]
+use opaque_schema_core::{
+    encode_canonical_field_defs, field_defs_to_canonical_string, parse_field_definitions,
+    derive_schema_id as core_derive_schema_id, SchemaParseError, MAX_FIELD_DEFS_STR_LEN,
+};
+use sha2::{Digest, Sha256};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, Address, BytesN, Env,
     String as SorobanString, Symbol, Vec,
@@ -6,6 +11,10 @@ use soroban_sdk::{
 
 #[contract]
 pub struct SchemaRegistry;
+
+/// Current event schema version — increment when the event topic/data layout changes.
+/// Scanners should reject events with an unrecognised version rather than misparse them.
+const EVENT_VERSION: u32 = 1;
 
 #[contracttype]
 #[derive(Clone)]
@@ -43,6 +52,14 @@ pub enum SchemaError {
     DelegateAlreadyExists = 6,
     DelegateNotFound = 7,
     SchemaAlreadyExists = 8,
+    InvalidExpiryLedger = 9,
+    InvalidFieldDefs = 10,
+    EmptyFieldDefs = 11,
+    TooManyFields = 12,
+    InvalidFieldName = 13,
+    InvalidFieldType = 14,
+    DuplicateFieldName = 15,
+    MalformedFieldSegment = 16,
 }
 
 fn schema_key(schema_id: &BytesN<32>) -> (Symbol, BytesN<32>) {
@@ -64,9 +81,31 @@ fn is_schema_active(env: &Env, schema: &Schema) -> bool {
 
 #[contractimpl]
 impl SchemaRegistry {
+    /// Read-only helper: derive the canonical schema ID for the given inputs.
+    pub fn compute_schema_id(
+        env: Env,
+        authority_key: BytesN<32>,
+        name: SorobanString,
+        field_definitions: SorobanString,
+        version: u32,
+    ) -> Result<BytesN<32>, SchemaError> {
+        let mut buf = [0u8; MAX_FIELD_DEFS_STR_LEN];
+        let defs_str = soroban_string_to_str(&field_definitions, &mut buf)?;
+        let fields = parse_field_definitions(defs_str).map_err(parse_error)?;
+        let canonical = encode_canonical_field_defs(&fields);
+        Ok(derive_schema_id(
+            &env,
+            &authority_key,
+            &name,
+            version,
+            &canonical,
+        ))
+    }
+
     pub fn register_schema(
         env: Env,
         authority: Address,
+        authority_key: BytesN<32>,
         schema_id: BytesN<32>,
         name: SorobanString,
         field_definitions: SorobanString,
@@ -79,13 +118,30 @@ impl SchemaRegistry {
         if name.len() > 64 {
             return Err(SchemaError::NameTooLong);
         }
-        if field_definitions.len() > 256 {
-            return Err(SchemaError::FieldDefsTooLong);
+        let mut buf = [0u8; MAX_FIELD_DEFS_STR_LEN];
+        let defs_str = soroban_string_to_str(&field_definitions, &mut buf)?;
+        let fields = parse_field_definitions(defs_str).map_err(parse_error)?;
+        let canonical_bytes = encode_canonical_field_defs(&fields);
+        let canonical_str = field_defs_to_canonical_string(&fields);
+        let expected_id = derive_schema_id(
+            &env,
+            &authority_key,
+            &name,
+            version,
+            &canonical_bytes,
+        );
+        if schema_id != expected_id {
+            return Err(SchemaError::InvalidSchemaId);
         }
         let skey = schema_key(&schema_id);
         if env.storage().persistent().has(&skey) {
             return Err(SchemaError::SchemaAlreadyExists);
         }
+        if schema_expiry_ledger != 0 && schema_expiry_ledger <= env.ledger().sequence() {
+            return Err(SchemaError::InvalidExpiryLedger);
+        }
+        let canonical_field_defs =
+            SorobanString::from_str(&env, canonical_str.as_str());
         let schema = Schema {
             schema_id: schema_id.clone(),
             authority: authority.clone(),
@@ -97,7 +153,7 @@ impl SchemaRegistry {
             }),
             revocable,
             name: name.clone(),
-            field_definitions,
+            field_definitions: canonical_field_defs,
             version,
             created_at: env.ledger().sequence(),
             schema_expiry_ledger,
@@ -118,7 +174,7 @@ impl SchemaRegistry {
         env.storage().persistent().set(&ids_key, &schema_ids);
 
         env.events().publish(
-            (Symbol::new(&env, "SchemaRegistered"),),
+            (Symbol::new(&env, "SchemaRegistered"), EVENT_VERSION),
             (schema_id, authority, name),
         );
         Ok(())
@@ -271,7 +327,31 @@ impl SchemaRegistry {
 #[cfg(test)]
 mod test {
     use super::*;
-    use soroban_sdk::{testutils::Address as _, Address, Env};
+    use opaque_schema_core::encode_canonical_field_defs;
+    use soroban_sdk::{testutils::{Address as _, Ledger as _}, Address, Env};
+
+    const AUTHORITY_KEY: [u8; 32] = [0x2au8; 32];
+
+    fn authority_key(env: &Env) -> BytesN<32> {
+        BytesN::from_array(env, &AUTHORITY_KEY)
+    }
+
+    fn schema_id_for(
+        env: &Env,
+        name: &str,
+        field_defs: &str,
+        version: u32,
+    ) -> BytesN<32> {
+        let fields = parse_field_definitions(field_defs).unwrap();
+        let canonical = encode_canonical_field_defs(&fields);
+        derive_schema_id(
+            env,
+            &authority_key(env),
+            &SorobanString::from_str(env, name),
+            version,
+            &canonical,
+        )
+    }
 
     fn register(
         env: &Env,
@@ -282,9 +362,10 @@ mod test {
     ) {
         client.register_schema(
             authority,
+            &authority_key(env),
             schema_id,
             &SorobanString::from_str(env, "TestSchema"),
-            &SorobanString::from_str(env, "field1:string"),
+            &SorobanString::from_str(env, "string field1"),
             &revocable,
             &1u32,
             &None,
@@ -299,7 +380,7 @@ mod test {
         let contract_id = env.register_contract(None, SchemaRegistry);
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[1u8; 32]);
+        let schema_id = schema_id_for(&env, "TestSchema", "string field1", 1);
 
         register(&env, &client, &authority, &schema_id, true);
 
@@ -317,7 +398,7 @@ mod test {
         let client = SchemaRegistryClient::new(&env, &contract_id);
         let authority = Address::generate(&env);
         let delegate = Address::generate(&env);
-        let schema_id = BytesN::from_array(&env, &[2u8; 32]);
+        let schema_id = schema_id_for(&env, "TestSchema", "string field1", 1);
 
         register(&env, &client, &authority, &schema_id, false);
         client.add_delegate(&authority, &schema_id, &delegate);
@@ -351,5 +432,192 @@ mod test {
         assert_eq!(page.len(), 2);
         assert_eq!(page.get(0).unwrap(), second);
         assert_eq!(page.get(1).unwrap(), third);
+    }
+
+    #[test]
+    fn test_expiry_zero_is_accepted() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let schema_id = schema_id_for(&env, "NoExpiry", "u32 f", 1);
+        client.register_schema(
+            &authority,
+            &authority_key(&env),
+            &schema_id,
+            &SorobanString::from_str(&env, "NoExpiry"),
+            &SorobanString::from_str(&env, "u32 f"),
+            &false,
+            &1u32,
+            &None,
+            &0u32,
+        );
+        let schema = client.get_schema(&schema_id);
+        assert_eq!(schema.schema_expiry_ledger, 0u32);
+    }
+
+    #[test]
+    fn test_expiry_in_past_is_rejected() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let schema_id = schema_id_for(&env, "Stale", "u32 f", 1);
+        env.ledger().with_mut(|li| li.sequence_number = 5);
+        let result = client.try_register_schema(
+            &authority,
+            &authority_key(&env),
+            &schema_id,
+            &SorobanString::from_str(&env, "Stale"),
+            &SorobanString::from_str(&env, "u32 f"),
+            &false,
+            &1u32,
+            &None,
+            &4u32,
+        );
+        assert_eq!(result, Err(Ok(SchemaError::InvalidExpiryLedger)));
+    }
+
+    #[test]
+    fn derive_schema_id_is_deterministic() {
+        let env = Env::default();
+        let authority_bytes = authority_key(&env);
+        let name = SorobanString::from_str(&env, "MySchema");
+        let fields = parse_field_definitions("string name").unwrap();
+        let canonical = encode_canonical_field_defs(&fields);
+        let first = derive_schema_id(&env, &authority_bytes, &name, 1, &canonical);
+        let second = derive_schema_id(&env, &authority_bytes, &name, 1, &canonical);
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn derive_schema_id_differs_by_version() {
+        let env = Env::default();
+        let authority_bytes = authority_key(&env);
+        let name = SorobanString::from_str(&env, "MySchema");
+        let fields = parse_field_definitions("string name").unwrap();
+        let canonical = encode_canonical_field_defs(&fields);
+        let v1 = derive_schema_id(&env, &authority_bytes, &name, 1, &canonical);
+        let v2 = derive_schema_id(&env, &authority_bytes, &name, 2, &canonical);
+        assert_ne!(v1, v2);
+    }
+
+    #[test]
+    fn derive_schema_id_differs_by_name() {
+        let env = Env::default();
+        let authority_bytes = authority_key(&env);
+        let fields = parse_field_definitions("string x").unwrap();
+        let canonical = encode_canonical_field_defs(&fields);
+        let a = derive_schema_id(
+            &env,
+            &authority_bytes,
+            &SorobanString::from_str(&env, "Foo"),
+            1,
+            &canonical,
+        );
+        let b = derive_schema_id(
+            &env,
+            &authority_bytes,
+            &SorobanString::from_str(&env, "Bar"),
+            1,
+            &canonical,
+        );
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn derive_schema_id_differs_by_field_defs() {
+        let env = Env::default();
+        let authority_bytes = authority_key(&env);
+        let name = SorobanString::from_str(&env, "MySchema");
+        let a_fields = parse_field_definitions("string name").unwrap();
+        let b_fields = parse_field_definitions("u32 name").unwrap();
+        let id_a = derive_schema_id(
+            &env,
+            &authority_bytes,
+            &name,
+            1,
+            &encode_canonical_field_defs(&a_fields),
+        );
+        let id_b = derive_schema_id(
+            &env,
+            &authority_bytes,
+            &name,
+            1,
+            &encode_canonical_field_defs(&b_fields),
+        );
+        assert_ne!(id_a, id_b);
+    }
+
+    #[test]
+    fn rejects_invalid_field_type() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let bogus_id = BytesN::from_array(&env, &[9u8; 32]);
+        let result = client.try_register_schema(
+            &authority,
+            &authority_key(&env),
+            &bogus_id,
+            &SorobanString::from_str(&env, "Bad"),
+            &SorobanString::from_str(&env, "float x"),
+            &false,
+            &1u32,
+            &None,
+            &0u32,
+        );
+        assert_eq!(result, Err(Ok(SchemaError::InvalidFieldType)));
+    }
+
+    #[test]
+    fn rejects_wrong_schema_id() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let wrong_id = BytesN::from_array(&env, &[1u8; 32]);
+        let result = client.try_register_schema(
+            &authority,
+            &authority_key(&env),
+            &wrong_id,
+            &SorobanString::from_str(&env, "Test"),
+            &SorobanString::from_str(&env, "string field1"),
+            &false,
+            &1u32,
+            &None,
+            &0u32,
+        );
+        assert_eq!(result, Err(Ok(SchemaError::InvalidSchemaId)));
+    }
+
+    #[test]
+    fn stores_canonical_field_definitions() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, SchemaRegistry);
+        let client = SchemaRegistryClient::new(&env, &contract_id);
+        let authority = Address::generate(&env);
+        let schema_id = schema_id_for(&env, "Test", "bool active, string label", 1);
+        client.register_schema(
+            &authority,
+            &authority_key(&env),
+            &schema_id,
+            &SorobanString::from_str(&env, "Test"),
+            &SorobanString::from_str(&env, "bool active, string label"),
+            &true,
+            &1u32,
+            &None,
+            &0u32,
+        );
+        let schema = client.get_schema(&schema_id);
+        assert_eq!(
+            schema.field_definitions,
+            SorobanString::from_str(&env, "bool active,string label")
+        );
     }
 }

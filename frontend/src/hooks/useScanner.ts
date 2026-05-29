@@ -8,6 +8,12 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { Buffer } from "buffer";
+import {
+  SorobanRpc,
+  scValToNative,
+  xdr,
+} from "@stellar/stellar-sdk";
 import type { StellarNetwork } from "../lib/chain";
 import {
   getAnnouncementsForCluster,
@@ -18,16 +24,14 @@ import {
   clearClusterCache,
   type CachedAnnouncement,
 } from "../lib/opaqueCache";
+import { getSorobanServer } from "../lib/stellar";
 import {
   getUserFacingSyncMessage,
   logSyncError,
 } from "../lib/syncErrorUtils";
 import { getStoredGhostEntries } from "../store/ghostAddressStore";
 
-type PublicClient = {
-  getSlot: () => Promise<number>;
-  getBalance: (address: string) => Promise<bigint>;
-} | null;
+type PublicClient = SorobanRpc.Server | null;
 
 export type ScanProgress = {
   phase: "idle" | "loading-cache" | "indexer-fetch" | "indexer-fetched" | "syncing" | "backfilling" | "matching" | "done" | "error";
@@ -73,7 +77,7 @@ export type UseScannerResult = {
 };
 
 function getStartBlock(_cluster: StellarNetwork): bigint {
-  return 0n;
+  return 1n; // Soroban events start from ledger 1
 }
 
 function getSubgraphUrl(_cluster: StellarNetwork): string | null {
@@ -89,16 +93,49 @@ async function fetchFromSubgraph(
 }
 
 async function fetchLogsAdaptive(
-  _publicClient: PublicClient,
-  _announcerAddress: string,
+  announcerAddress: string,
   fromBlock: bigint,
-  _toBlock: bigint,
+  toBlock: bigint,
   _cluster: StellarNetwork,
-  onChunk: (from: bigint, to: bigint, logs: unknown[]) => Promise<void>
+  onChunk: (from: bigint, to: bigint, logs: CachedAnnouncement[]) => Promise<void>
 ): Promise<void> {
-  // Stellar event backfill needs a Soroban event indexer. The old implementation
-  // used Solana transaction-log APIs and returned stubbed data through legacyTxShim.
-  await onChunk(fromBlock, fromBlock, []);
+  const publicClient = getSorobanServer();
+  let currentFrom = fromBlock;
+  const BATCH_SIZE = 10000n; // Ledger range per call
+
+  while (currentFrom <= toBlock) {
+    const currentTo =
+      currentFrom + BATCH_SIZE > toBlock ? toBlock : currentFrom + BATCH_SIZE;
+
+    const response = await publicClient.getEvents({
+      startLedger: Number(currentFrom),
+      filters: [
+        {
+          type: "contract",
+          contractIds: [announcerAddress],
+          topics: [[xdr.ScVal.scvSymbol("Announcement").toXDR("base64")]],
+        },
+      ],
+    });
+
+    const mapped: CachedAnnouncement[] = response.events.map((ev: SorobanRpc.Api.RawEventResponse) => {
+      // Event value is (scheme_id, stealth_address, caller, ephemeral_pub_key, metadata)
+      const val = scValToNative(ev.value) as any[];
+      return {
+        transactionSignature: ev.txHash,
+        logIndex: 0,
+        slot: ev.ledger,
+        args: {
+          stealthAddress: "0x" + Buffer.from(val[1]).toString("hex"),
+          ephemeralPubKey: "0x" + Buffer.from(val[3]).toString("hex"),
+          metadata: "0x" + Buffer.from(val[4]).toString("hex"),
+        },
+      };
+    });
+
+    await onChunk(currentFrom, currentTo, mapped);
+    currentFrom = currentTo + 1n;
+  }
 }
 
 async function checkWatchlistBalances(
@@ -176,7 +213,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
 
   const runChunkedRpcSync = useCallback(
     async (
-      publicClient: NonNullable<typeof opts.publicClient>,
+      _publicClient: NonNullable<typeof opts.publicClient>,
       announcerAddress: string,
       fromBlock: bigint,
       toBlock: bigint,
@@ -184,18 +221,17 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
       startBlock: bigint
     ) => {
       await fetchLogsAdaptive(
-        publicClient,
         announcerAddress,
         fromBlock,
         toBlock,
         cluster!,
         async (_from, end, logs) => {
-          await putAnnouncements(cluster!, logs as Parameters<typeof putAnnouncements>[1]);
+          await putAnnouncements(cluster!, logs);
           await setSyncState(cluster!, Number(end));
           const totalBlocks = Number(toBlock - (cacheEmpty ? startBlock : fromBlock) + 1n);
           const doneBlocks = Number(end - (cacheEmpty ? startBlock : fromBlock) + 1n);
           const percent = totalBlocks > 0 ? Math.min(100, Math.round((doneBlocks / totalBlocks) * 100)) : 100;
-          setProgress((p) => ({
+          setProgress((p: ScanProgress) => ({
             ...p,
             phase: cacheEmpty ? "backfilling" : "syncing",
             percent,
@@ -226,11 +262,29 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
         setAnnouncements([]);
       }
 
-      setProgress((p) => ({ ...p, phase: "loading-cache", message: "Loading cache…", error: null }));
+      setProgress((p: ScanProgress) => ({ ...p, phase: "loading-cache", message: "Loading cache…", error: null }));
 
       const cached = await getAnnouncementsForCluster(cluster);
       const sync = await getSyncState(cluster);
       const lastScanned = sync?.lastScannedSlot ?? null;
+      // Gap detection: ensure cached announcements cover up to lastScannedSlot
+      if (cached.length > 0 && lastScanned != null) {
+        const maxCachedSlot = Math.max(...cached.map((a) => a.slot));
+        if (maxCachedSlot < lastScanned) {
+          console.warn('[useScanner] Detected gap between cached announcements and sync state. Resetting sync.', {
+            maxCachedSlot,
+            lastScanned,
+          });
+          await clearSyncState(cluster);
+          // Inform UI that a gap was detected and a full sync may be needed
+          setProgress((p) => ({
+            ...p,
+            phase: "error",
+            error: "Ledger gap detected – cache cleared. Click \"Full Rescan\" to re-sync.",
+            message: "Ledger gap detected",
+          }));
+        }
+      }
       const toBlock = BigInt(await publicClient.getSlot());
       const fromBlock =
         clearCache || lastScanned == null
@@ -259,7 +313,8 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
             await setSyncState(cluster, maxSlot);
             // Pass announcements directly so WASM scanning loop runs immediately (no cache read).
             setAnnouncements(list);
-            setProgress({
+            setProgress((p: ScanProgress) => ({
+              ...p,
               phase: "indexer-fetched",
               percent: 100,
               message: "Scanning Vault…",
@@ -267,7 +322,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
               toBlock,
               currentBlock: toBlock,
               error: null,
-            });
+            }));
             setIsBackfilling(false);
             return;
           }
@@ -278,7 +333,8 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
 
       if (cacheEmpty && !clearCache) {
         setIsBackfilling(true);
-        setProgress({
+        setProgress((p: ScanProgress) => ({
+          ...p,
           phase: "backfilling",
           percent: 0,
           message: "Optimizing Vault… [0%]",
@@ -286,11 +342,12 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
           toBlock,
           currentBlock: startBlock,
           error: null,
-        });
+        }));
       } else {
         setAnnouncements(cached);
         if (fromBlock > toBlock) {
-          setProgress({
+          setProgress((p: ScanProgress) => ({
+            ...p,
             phase: "done",
             percent: 100,
             message: "Up to date",
@@ -298,11 +355,11 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
             toBlock,
             currentBlock: toBlock,
             error: null,
-          });
+          }));
           setIsBackfilling(false);
           return;
         }
-        setProgress((p) => ({
+        setProgress((p: ScanProgress) => ({
           ...p,
           phase: "syncing",
           percent: 0,
@@ -317,7 +374,8 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
         await runChunkedRpcSync(publicClient, announcerAddress, fromBlock, toBlock, cacheEmpty, startBlock);
         const updated = await getAnnouncementsForCluster(cluster);
         setAnnouncements(updated);
-        setProgress({
+        setProgress((p: ScanProgress) => ({
+          ...p,
           phase: "done",
           percent: 100,
           message: "Up to date",
@@ -325,12 +383,12 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
           toBlock,
           currentBlock: toBlock,
           error: null,
-        });
+        }));
         setIsBackfilling(false);
       } catch (err) {
         const msg = getUserFacingSyncMessage(err);
         logSyncError(err, "Sync failed");
-        setProgress((p) => ({
+        setProgress((p: ScanProgress) => ({
           ...p,
           phase: "error",
           error: msg,
@@ -350,7 +408,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
         hasPublicClient: !!publicClient,
         hasAnnouncerAddress: !!announcerAddress,
       });
-      setProgress((p) => ({ ...p, phase: "idle" }));
+      setProgress((p: ScanProgress) => ({ ...p, phase: "idle" }));
       return;
     }
 
@@ -358,7 +416,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
     // getSubgraphUrl(cluster);
 
     let cancelled = false;
-    setProgress((p) => ({ ...p, phase: "loading-cache", message: "Loading cache…" }));
+    setProgress((p: ScanProgress) => ({ ...p, phase: "loading-cache", message: "Loading cache…" }));
 
     (async () => {
       const cached = await getAnnouncementsForCluster(cluster);
@@ -401,7 +459,7 @@ export function useScanner(opts: UseScannerOptions): UseScannerResult {
   }, [runScan]);
 
   const markSyncComplete = useCallback(() => {
-    setProgress((p) => {
+    setProgress((p: ScanProgress) => {
       if (p.phase !== "indexer-fetched") return p;
       return { ...p, phase: "done", message: "Up to date" };
     });
