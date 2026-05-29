@@ -165,6 +165,7 @@ dependencies = [
 name = "attestation-engine-v2"
 version = "0.1.0"
 dependencies = [
+ "schema-registry",
  "sha2",
  "soroban-sdk",
 ]
@@ -1104,6 +1105,7 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 name = "schema-registry"
 version = "0.1.0"
 dependencies = [
+ "sha2",
  "soroban-sdk",
 ]
 
