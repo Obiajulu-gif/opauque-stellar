@@ -3,13 +3,11 @@
  *
  * Each real dApp deployment should:
  *   1. Pick a unique EXTERNAL_NULLIFIER so that proofs generated for this app
- *      cannot be replayed in any other app (they bind the nullifier_hash to
- *      this specific value).
+ *      cannot be replayed in any other app.
  *   2. Optionally lock to a specific REQUIRED_SCHEMA_ID so that only holders
  *      of a particular attestation type can enter.
- *
- * The value must be a decimal integer string or a 0x-prefixed hex string
- * (it is a BN254 field element inside the circuit).
+ *   3. Configure VITE_NULLIFIER_SERVICE_URL so nullifier consumption is enforced
+ *      by shared backend, verifier-service, or chain adapter state.
  */
 
 export const DEMO_CONFIG = {
@@ -17,20 +15,16 @@ export const DEMO_CONFIG = {
   EXTERNAL_NULLIFIER: "1",
 
   /**
-   * Optional: restrict access to holders of a specific schema.
-   * Set to null to accept proofs from any valid schema.
-   *
-   * Set to the schema ID hex string (0x-prefixed, 64 chars) to lock down
-   * to one specific attestation type.
-   *
-   * Example:
-   *   REQUIRED_SCHEMA_ID: "0xabc123...",
+   * Shared nullifier verifier endpoint.
+   * Expected API:
+   *   GET  /nullifiers/:hash -> 404 when unused, or { used: true } when used
+   *   POST /nullifiers       -> 200/201 when consumed, 409 when already used
    */
+  NULLIFIER_SERVICE_URL: import.meta.env.VITE_NULLIFIER_SERVICE_URL as string | undefined,
+
+  /** Optional: restrict access to holders of a specific schema. */
   REQUIRED_SCHEMA_ID: null as string | null,
 
   /** Display name shown in the UI. */
   APP_NAME: "Opaque Demo Gate",
-
-  /** localStorage key used to track consumed nullifier hashes. */
-  NULLIFIER_STORE_KEY: "opaque-demo-used-nullifiers",
 } as const;
