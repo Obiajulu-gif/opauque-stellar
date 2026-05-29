@@ -6,15 +6,14 @@
  *   2. Confirm public signals match what this dApp expects:
  *        publicSignals[2] === EXTERNAL_NULLIFIER  (bound to this dApp)
  *        publicSignals[1] === REQUIRED_SCHEMA_ID  (if configured)
- *   3. Check the nullifier_hash has not already been consumed.
- *   4. Run snarkjs.groth16.verify with the bundled verification key.
- *   5. On success, consume the nullifier.
+ *   3. Run snarkjs.groth16.verify with the bundled verification key.
+ *   4. On success, atomically consume the nullifier through shared storage.
  */
 
 // @ts-expect-error — snarkjs has no bundled types
 import * as snarkjs from "snarkjs";
 import { DEMO_CONFIG } from "./config";
-import { isNullifierUsed, consumeNullifier } from "./nullifierStore";
+import { consumeNullifier } from "./nullifierStore";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -112,8 +111,6 @@ export async function verifyProof(raw: string): Promise<VerifyResult> {
 
   // ── 4. Optional schema check ───────────────────────────────────────────────
   if (DEMO_CONFIG.REQUIRED_SCHEMA_ID !== null) {
-    // The attestation_id public signal is the schema_id packed as a BN254 field element.
-    // We do a string comparison after normalising to lowercase 0x-hex.
     const normalise = (s: string) =>
       s.startsWith("0x") ? s.toLowerCase() : "0x" + BigInt(s).toString(16);
 
@@ -126,16 +123,7 @@ export async function verifyProof(raw: string): Promise<VerifyResult> {
     }
   }
 
-  // ── 5. Nullifier replay check ─────────────────────────────────────────────
-  if (isNullifierUsed(nullifierHash)) {
-    return {
-      ok: false,
-      reason:
-        "This proof has already been used. Each proof can only grant access once — generate a new proof.",
-    };
-  }
-
-  // ── 6. Cryptographic verification ─────────────────────────────────────────
+  // ── 5. Cryptographic verification ─────────────────────────────────────────
   let vKey: unknown;
   try {
     vKey = await loadVKey();
@@ -169,8 +157,16 @@ export async function verifyProof(raw: string): Promise<VerifyResult> {
     };
   }
 
-  // ── 7. Consume nullifier (prevent replay) ─────────────────────────────────
-  consumeNullifier(nullifierHash);
+  // ── 6. Shared nullifier consumption ───────────────────────────────────────
+  const consumeResult = await consumeNullifier(nullifierHash);
+  if (!consumeResult.consumed) {
+    return {
+      ok: false,
+      reason:
+        consumeResult.reason ??
+        "This proof has already been used. Each proof can only grant access once — generate a new proof.",
+    };
+  }
 
   return {
     ok: true,
