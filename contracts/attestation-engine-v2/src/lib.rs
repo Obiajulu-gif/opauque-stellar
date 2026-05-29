@@ -59,10 +59,6 @@ fn compute_attestation_uid(
     ledger: u32,
     issuance_sequence: u64,
 ) -> BytesN<32> {
-    // Deterministic UID preimage:
-    // schema_id || stealth_address_hash || ledger_sequence || issuance_sequence.
-    // The contract-managed sequence prevents same-ledger attestations for the
-    // same schema and stealth hash from deriving the same storage key.
     let mut hasher = Sha256::new();
     hasher.update(schema_id.to_array());
     hasher.update(stealth_hash.to_array());
@@ -101,7 +97,7 @@ impl AttestationEngineV2 {
         }
         let authorized: bool = env.invoke_contract(
             &schema_registry,
-            &Symbol::new(&env, "is_authorized_issuer"),
+            &Symbol::new(&env, "can_issue"),
             (schema_id.clone(), issuer.clone()).into_val(&env),
         );
         if !authorized {
@@ -137,6 +133,13 @@ impl AttestationEngineV2 {
             (uid.clone(), schema_id, issuer, stealth_address_hash),
         );
         Ok(uid)
+    }
+
+    pub fn get_attestation(env: Env, uid: BytesN<32>) -> Result<Attestation, AttestationError> {
+        env.storage()
+            .persistent()
+            .get(&attestation_key(&uid))
+            .ok_or(AttestationError::AttestationNotFound)
     }
 
     pub fn revoke_attestation(
@@ -195,6 +198,28 @@ mod test {
             true
         }
 
+        pub fn can_issue(_env: Env, _schema_id: BytesN<32>, _issuer: Address) -> bool {
+            true
+        }
+
+        pub fn is_revocable(_env: Env, _schema_id: BytesN<32>) -> bool {
+            true
+        }
+    }
+
+    #[contract]
+    struct InactiveRegistry;
+
+    #[contractimpl]
+    impl InactiveRegistry {
+        pub fn is_authorized_issuer(_env: Env, _schema_id: BytesN<32>, _issuer: Address) -> bool {
+            true
+        }
+
+        pub fn can_issue(_env: Env, _schema_id: BytesN<32>, _issuer: Address) -> bool {
+            false
+        }
+
         pub fn is_revocable(_env: Env, _schema_id: BytesN<32>) -> bool {
             true
         }
@@ -221,6 +246,58 @@ mod test {
         let second = compute_attestation_uid(&env, &schema_id, &stealth_hash, 7, 1);
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn inactive_schema_rejects_new_attestations() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let engine_id = env.register(AttestationEngineV2, ());
+        let registry_id = env.register(InactiveRegistry, ());
+        let client = AttestationEngineV2Client::new(&env, &engine_id);
+        let issuer = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[7u8; 32]);
+        let stealth_hash = BytesN::from_array(&env, &[8u8; 32]);
+        let data = Bytes::new(&env);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let result = client.try_attest(
+            &issuer,
+            &schema_id,
+            &registry_id,
+            &stealth_hash,
+            &data,
+            &0,
+            &ref_uid,
+        );
+
+        assert_eq!(result, Err(Ok(AttestationError::UnauthorizedIssuer)));
+    }
+
+    #[test]
+    fn existing_valid_attestation_remains_readable() {
+        let env = Env::default();
+        let (client, _engine_id, registry_id) = setup(&env);
+        let issuer = Address::generate(&env);
+        let schema_id = BytesN::from_array(&env, &[9u8; 32]);
+        let stealth_hash = BytesN::from_array(&env, &[10u8; 32]);
+        let data = Bytes::new(&env);
+        let ref_uid = BytesN::from_array(&env, &[0u8; 32]);
+
+        let uid = client.attest(
+            &issuer,
+            &schema_id,
+            &registry_id,
+            &stealth_hash,
+            &data,
+            &0,
+            &ref_uid,
+        );
+
+        let saved = client.get_attestation(&uid);
+        assert_eq!(saved.uid, uid);
+        assert_eq!(saved.schema_id, schema_id);
+        assert_eq!(saved.issuer, issuer);
     }
 
     #[test]
