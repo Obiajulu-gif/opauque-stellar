@@ -198,45 +198,15 @@ Same DKSAP layout as [EIP-5564](https://eips.ethereum.org/EIPS/eip-5564) / [ERC-
 
 Parts of this codebase were written by contributors at the project’s previous home, [**collinsadi/opauque-stellar**](https://github.com/collinsadi/opauque-stellar) (note the spelling: *opauque*, not *opaque*). Development continues in **this** repository because that name cannot be corrected on GitHub right now, and the project needed a cleaner, stricter baseline for open-source work—supply-chain checks, CI gates, security policy, and related hygiene.
 
-The people below are credited from commit history on the previous repository. New contributions here will be tracked separately; this list is preserved so earlier work is not forgotten.
+Avatars below are generated automatically from Git commit history on the previous repository ([contrib.rocks](https://contrib.rocks) → GitHub Contributors API). New contributions in **this** repo will appear on its own graph once people land commits here.
 
-| Contributor | Commits ([opauque-stellar](https://github.com/collinsadi/opauque-stellar)) |
-|:------------|-----:|
-| [@collinsadi](https://github.com/collinsadi) | 94 |
-| [@robertocarlous](https://github.com/robertocarlous) | 11 |
-| [@Obiajulu-gif](https://github.com/Obiajulu-gif) | 9 |
-| [@johnsmccain](https://github.com/johnsmccain) | 5 |
-| [@bricecain](https://github.com/bricecain) | 4 |
-| [@logantalen](https://github.com/logantalen) | 4 |
-| [@0xsteins](https://github.com/0xsteins) | 2 |
-| [@Dannyswiss1](https://github.com/Dannyswiss1) | 2 |
-| [@devsimze](https://github.com/devsimze) | 2 |
-| [@Feyisara2108](https://github.com/Feyisara2108) | 2 |
-| [@Georgechisom](https://github.com/Georgechisom) | 2 |
-| [@Marvell69](https://github.com/Marvell69) | 2 |
-| [@Smartdevs17](https://github.com/Smartdevs17) | 2 |
-| [@0xMegie](https://github.com/0xMegie) | 1 |
-| [@Akatenvictor](https://github.com/Akatenvictor) | 1 |
-| [@aniokedianne](https://github.com/aniokedianne) | 1 |
-| [@Benalex8797](https://github.com/Benalex8797) | 1 |
-| [@boys-cyberhub](https://github.com/boys-cyberhub) | 1 |
-| [@brightpixel-dev](https://github.com/brightpixel-dev) | 1 |
-| [@davedumto](https://github.com/davedumto) | 1 |
-| [@davidmaronio](https://github.com/davidmaronio) | 1 |
-| [@DeborahOlaboye](https://github.com/DeborahOlaboye) | 1 |
-| [@gboigwe](https://github.com/gboigwe) | 1 |
-| [@goldandrew](https://github.com/goldandrew) | 1 |
-| [@IbrahimIjai](https://github.com/IbrahimIjai) | 1 |
-| [@infimum90](https://github.com/infimum90) | 1 |
-| [@Just-Bamford](https://github.com/Just-Bamford) | 1 |
-| [@kryputh](https://github.com/kryputh) | 1 |
-| [@Mawuli-tech](https://github.com/Mawuli-tech) | 1 |
-| [@Nanle-code](https://github.com/Nanle-code) | 1 |
-| [@rohan911438](https://github.com/rohan911438) | 1 |
-| [@utahkanz-ops](https://github.com/utahkanz-ops) | 1 |
-| [@WISDOM-WOKE22](https://github.com/WISDOM-WOKE22) | 1 |
+<a href="https://github.com/collinsadi/opauque-stellar/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=collinsadi/opauque-stellar&columns=10" alt="Contributors to collinsadi/opauque-stellar" />
+</a>
 
-See also the [contributors graph](https://github.com/collinsadi/opauque-stellar/graphs/contributors) on the previous repository.
+<p align="center">
+  <sub>Made with <a href="https://contrib.rocks">contrib.rocks</a> · <a href="https://github.com/collinsadi/opauque-stellar/graphs/contributors">full contributor graph</a></sub>
+</p>
 
 ---
 
