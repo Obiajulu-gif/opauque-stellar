@@ -1,0 +1,10 @@
+# Default owner for everything in the repo. Required reviewer for all PRs.
+* @collinsadi
+
+# Consensus-critical areas — review with extra care.
+/contracts/      @collinsadi
+/scanner/        @collinsadi
+/circuits/       @collinsadi
+/deployments/    @collinsadi
+/scripts/        @collinsadi
+/.github/        @collinsadi
