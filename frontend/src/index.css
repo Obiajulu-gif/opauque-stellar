@@ -1,0 +1,288 @@
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Syne", system-ui, sans-serif;
+  --font-sans: "DM Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* Brand theme tokens — black & white only */
+  --color-ink-950: #000000;
+  --color-ink-900: #000000;
+  --color-ink-800: #000000;
+  --color-ink-700: #000000;
+  --color-ink-600: #000000;
+  --color-ink-500: #ffffff;
+  --color-mist: #ffffff;
+  --color-glow: #ffffff;
+  --color-glow-dim: #ffffff;
+  --color-glow-muted: #000000;
+  --color-flare: #ffffff;
+  --color-sol-purple: #ffffff;
+  --color-sol-purple-dim: #ffffff;
+  --color-sol-purple-muted: #000000;
+  --color-sol-gradient-start: #ffffff;
+  --color-sol-gradient-end: #ffffff;
+
+  --color-black: #000000;
+  --color-white: #ffffff;
+  --color-neutral-50: #ffffff;
+  --color-neutral-100: #ffffff;
+  --color-neutral-200: #ffffff;
+  --color-neutral-300: #ffffff;
+  --color-neutral-400: #ffffff;
+  --color-neutral-500: #ffffff;
+  --color-neutral-600: #ffffff;
+  --color-neutral-700: #ffffff;
+  --color-neutral-800: #ffffff;
+  --color-neutral-900: #000000;
+  --color-neutral-950: #000000;
+
+  --color-surface: #000000;
+  --color-surface-raised: #000000;
+  --color-surface-overlay: #000000;
+  --color-border: rgba(255, 255, 255, 0.25);
+  --color-border-subtle: rgba(255, 255, 255, 0.15);
+  --color-border-focus: #ffffff;
+
+  --color-accent: #ffffff;
+  --color-accent-muted: #ffffff;
+  --color-success: #ffffff;
+  --color-warning: #ffffff;
+  --color-error: #ffffff;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+  }
+
+  ::selection {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  ::placeholder {
+    color: rgba(255, 255, 255, 0.45);
+  }
+
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  summary {
+    cursor: pointer;
+  }
+}
+
+@layer utilities {
+  .bg-size-grid {
+    background-size: 100% 100%, 48px 48px, 48px 48px;
+  }
+
+  .bg-grid-fade {
+    background-image:
+      linear-gradient(to bottom, transparent 0%, #000000 100%),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+      linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  }
+
+  .bg-sol-gradient {
+    background: #ffffff;
+    color: #000000;
+  }
+
+  .text-sol-gradient {
+    color: #ffffff;
+    -webkit-text-fill-color: #ffffff;
+    background: none;
+  }
+
+  .border-sol-gradient {
+    border-color: #ffffff;
+  }
+
+  .bg-white.text-white {
+    color: #000000;
+  }
+
+  .hover\:bg-sol-purple\/90:hover {
+    background: #000000;
+    color: #ffffff;
+  }
+
+  /* Neutral fill buttons used across recovery/security flows */
+  .bg-neutral-600.text-white,
+  .bg-neutral-700.text-white {
+    color: #000000;
+  }
+
+  .hover\:bg-neutral-700:hover,
+  .hover\:bg-neutral-800:hover {
+    background: #000000;
+    color: #ffffff;
+  }
+
+  /* Ink hover washes — white tint, not gray hex */
+  .hover\:bg-ink-600:hover,
+  .hover\:bg-ink-700:hover,
+  .hover\:bg-ink-800:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: #000000;
+  color: #ffffff;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+#root {
+  min-height: 100vh;
+  position: relative;
+  overflow-x: hidden;
+}
+
+.card {
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 12px;
+  padding: 24px;
+}
+
+.card-glass {
+  background: #000000;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 16px;
+  padding: 24px;
+  box-shadow: none;
+}
+
+.banner-glass {
+  background: #000000;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+}
+
+.btn-primary {
+  background: #ffffff;
+  color: #000000;
+  font-weight: 600;
+  border: 1px solid #ffffff;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.btn-primary:hover:not(:disabled) {
+  background: #000000;
+  color: #ffffff;
+}
+.btn-primary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.btn-primary.loading {
+  opacity: 0.7;
+}
+
+.btn-secondary {
+  background: transparent;
+  color: #ffffff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.btn-secondary:hover:not(:disabled) {
+  border-color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+.btn-secondary:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.input-field {
+  width: 100%;
+  padding: 10px 14px;
+  font-size: 14px;
+  font-family: var(--font-mono);
+  background: #000000;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 8px;
+  color: #ffffff;
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+.input-field:focus {
+  border-color: #ffffff;
+}
+
+.text-address {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  letter-spacing: 0.02em;
+  word-break: break-all;
+}
+
+.font-mono {
+  font-family: var(--font-mono);
+}
+
+.font-display {
+  font-family: var(--font-display);
+}
+
+@keyframes scanner-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 1; }
+}
+.scanner-pulse {
+  animation: scanner-pulse 2s ease-in-out infinite;
+}
+
+@keyframes slide-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.slide-in-decrypted {
+  animation: slide-in 0.3s ease-out forwards;
+}
+
+.detection-flash {
+  animation: slide-in 0.3s ease-out forwards;
+}
+
+@keyframes privacy-shield {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(1);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.05);
+    box-shadow: 0 0 0 2px #ffffff;
+  }
+}
+.privacy-shield {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  background: #000000;
+  animation: privacy-shield 2.5s ease-in-out infinite;
+}
+
+@keyframes sol-glow-pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.25);
+  }
+  50% {
+    box-shadow: 0 0 0 2px #ffffff;
+  }
+}

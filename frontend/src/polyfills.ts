@@ -1,0 +1,22 @@
+/**
+ * Browser globals for snarkjs / Circom and Stellar SDK in the browser.
+ */
+import { Buffer } from "buffer";
+import process from "process";
+
+const g = globalThis as typeof globalThis & {
+  Buffer?: typeof Buffer;
+  global?: typeof globalThis;
+  process?: typeof process;
+};
+if (g.Buffer === undefined) {
+  g.Buffer = Buffer;
+}
+// Some bundled deps still read `global` (Node) instead of `globalThis`.
+if (g.global === undefined) {
+  g.global = globalThis;
+}
+// snarkjs/circom dependencies may reference Node's `process` in browser builds.
+if (g.process === undefined) {
+  g.process = process;
+}
