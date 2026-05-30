@@ -1,0 +1,38 @@
+[workspace]
+members = [
+    "contracts/stealth-registry",
+    "contracts/stealth-announcer",
+    "contracts/groth16-verifier",
+    "contracts/reputation-verifier",
+    "contracts/schema-registry",
+    "contracts/attestation-engine-v2",
+]
+
+[workspace.network]
+testnet = "Test SDF Network ; September 2015"
+futurenet = "Test SDF Future Network ; October 2022"
+mainnet = "Public Global Stellar Network ; September 2015"
+
+[workspace.contracts.stealth_registry]
+name = "stealth-registry"
+version = "0.1.0"
+
+[workspace.contracts.stealth_announcer]
+name = "stealth-announcer"
+version = "0.1.0"
+
+[workspace.contracts.groth16_verifier]
+name = "groth16-verifier"
+version = "0.1.0"
+
+[workspace.contracts.reputation_verifier]
+name = "reputation-verifier"
+version = "0.1.0"
+
+[workspace.contracts.schema_registry]
+name = "schema-registry"
+version = "0.1.0"
+
+[workspace.contracts.attestation_engine_v2]
+name = "attestation-engine-v2"
+version = "0.1.0"
