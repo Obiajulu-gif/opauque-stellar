@@ -1,0 +1,13 @@
+{
+  "name": "@opaque/event-decoder",
+  "version": "1.0.0",
+  "description": "Typed decoder for Opaque stealth announcer and attestation Soroban events",
+  "type": "module",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  }
+}

@@ -14,6 +14,8 @@ function isAddress(a: string): boolean {
     return /^0x[0-9a-fA-F]{40}$/i.test(t);
   return StrKey.isValidEd25519PublicKey(t);
 }
+import { isWasmSupported } from "../lib/wasmSupport";
+import { WasmUnsupportedNotice } from "./WasmUnsupportedNotice";
 import { useOpaqueWasm } from "../hooks/useOpaqueWasm";
 import { useScanner } from "../hooks/useScanner";
 import type { CachedAnnouncement } from "../lib/opaqueCache";
@@ -795,6 +797,10 @@ export function PrivateBalanceView() {
     const t = setTimeout(() => setNewlyDetectedIds([]), 2200);
     return () => clearTimeout(t);
   }, [newlyDetectedIds]);
+
+  if (!isWasmSupported()) {
+    return <WasmUnsupportedNotice />;
+  }
 
   const allEntries = portfolio.entries;
   const totalSol = portfolio.totalRaw;

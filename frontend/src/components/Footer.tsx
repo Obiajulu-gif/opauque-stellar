@@ -28,6 +28,14 @@ export function Footer() {
         >
           Abuse policy
         </Link>
+        <a
+          href="https://status.stellar.org"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-white transition-colors"
+        >
+          Network status
+        </a>
       </nav>
       <p className="font-mono text-mist/60">
         © 2026 Opaque Protocol. Stellar stealth and reputation stack.
