@@ -1,0 +1,30 @@
+name: Stellar endpoint health
+
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Optional network to probe: testnet or mainnet'
+        required: false
+        default: ''
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Probe configured Horizon and Soroban RPC endpoints
+        env:
+          OPS_ALERT_WEBHOOK_URL: ${{ secrets.OPS_ALERT_WEBHOOK_URL }}
+          NETWORK: ${{ github.event.inputs.network }}
+        run: |
+          if [ -n "$NETWORK" ]; then
+            node scripts/probe-horizon-rpc.mjs --network "$NETWORK"
+          else
+            node scripts/probe-horizon-rpc.mjs
+          fi
