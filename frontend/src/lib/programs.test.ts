@@ -8,7 +8,7 @@ import {
   mapSchemaManagementError,
 } from "./programs";
 
-const WALLET = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+const WALLET = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const BYTES_32 = new Uint8Array(32).fill(7);
 
 describe("program invocation builders", () => {
