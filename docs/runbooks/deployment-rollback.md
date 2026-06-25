@@ -24,6 +24,12 @@ Use rollback when:
 ls deployments/v1/testnet.previous.json
 ```
 
+If the file does not exist yet, copy the template and fill it with the last validated contract IDs and `wasmHash` values:
+
+```bash
+cp deployments/v1/testnet.previous.example.json deployments/v1/testnet.previous.json
+```
+
 2. Confirm Stellar CLI is authenticated for the target network when using `--execute`.
 3. Confirm the previous manifest contains the known-good contract IDs and `wasmHash` values.
 4. Announce the rollback window to operators.

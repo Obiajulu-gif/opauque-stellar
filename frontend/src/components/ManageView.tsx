@@ -14,6 +14,7 @@ import { useEffect, useMemo, useState, useCallback, useId } from "react";
 import { useWallet } from "../hooks/useWallet";
 import { useSchemaStore } from "../store/schemaStore";
 import type { SchemaV2 } from "../lib/schema";
+import type { AttestationV2 } from "../lib/attestationV2";
 import {
   bytesToHex,
   hexPubkeyToBase58,
@@ -55,6 +56,49 @@ function shortHex(hex: string): string {
 
 function toHexKey(value: string): string {
   return value.startsWith("0x") ? value.toLowerCase() : `0x${value.toLowerCase()}`;
+}
+
+function bigintFromNumber(value: number | undefined): bigint {
+  return BigInt(value ?? 0);
+}
+
+function toManagedAttestation(
+  attestation: AttestationV2,
+  schemaMap: Record<string, SchemaV2>,
+  currentSlot: bigint,
+): ManagedAttestation | null {
+  const schemaIdHex = toHexKey(attestation.schemaId);
+  const schema = schemaMap[schemaIdHex] ?? schemaMap[schemaIdHex.replace(/^0x/, "")];
+
+  try {
+    const expirationSlot = bigintFromNumber(attestation.expirationSlot);
+    const revocationSlot = bigintFromNumber(attestation.revocationSlot);
+    const isRevoked = revocationSlot > 0n || !attestation.isValid;
+    const isExpired = expirationSlot > 0n && expirationSlot <= currentSlot;
+
+    return {
+      address: attestation.address,
+      uid: hexToBytes(attestation.uid),
+      uidHex: toHexKey(attestation.uid),
+      schemaPda: attestation.schemaPda,
+      schemaId: hexToBytes(schemaIdHex),
+      schemaIdHex,
+      schemaName: schema?.name ?? "Unknown Schema",
+      stealthAddressHash: hexToBytes(attestation.stealthAddressHash),
+      createdAt: bigintFromNumber(attestation.createdAt),
+      expirationSlot,
+      revocationSlot,
+      isRevoked,
+      isExpired,
+      isRevocable: schema?.revocable ?? true,
+    };
+  } catch (error) {
+    console.warn("[ManageView] Skipping malformed attestation row", {
+      uid: attestation.uid,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
 }
 
 function StatusBadge({ label, variant }: { label: string; variant: "green" | "red" | "yellow" | "gray" }) {
@@ -413,8 +457,9 @@ interface ManageViewProps {
 export function ManageView({ onNavigate }: ManageViewProps = {}) {
   const { address: walletAddress, publicKey, connection, signTransaction } = useWallet();
   const schemaMap = useSchemaStore((s) => s.schemas);
+  const attestationMap = useSchemaStore((s) => s.attestations);
   const addSchema = useSchemaStore((s) => s.addSchema);
-  const markTraitInvalid = useSchemaStore((s) => s.markTraitInvalid);
+  const removeRevokedTrait = useSchemaStore((s) => s.removeRevokedTrait);
 
   const [attestations, setAttestations] = useState<ManagedAttestation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -442,8 +487,8 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
 
   const handleAttestationRevoked = useCallback((uidHex: string) => {
     const clean = toHexKey(uidHex);
-    markTraitInvalid(clean);
-    markTraitInvalid(clean.replace(/^0x/, ""));
+    removeRevokedTrait(clean);
+    removeRevokedTrait(clean.replace(/^0x/, ""));
     setAttestations((current) =>
       current.map((att) =>
         toHexKey(att.uidHex) === clean
@@ -451,7 +496,7 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
           : att,
       ),
     );
-  }, [markTraitInvalid]);
+  }, [removeRevokedTrait]);
 
   const filteredAttestations = useMemo(() => {
     const q = recipientSearch.trim().toLowerCase().replace(/^0x/, "");
@@ -480,38 +525,20 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     if (!publicKey) return;
     setLoading(true);
     try {
-      const [slot, schemaRows, attestationRows] = await Promise.all([
-        connection.getSlot(),
-        Promise.resolve(Object.values(schemaMap)),
-        Promise.resolve([] as ManagedAttestation[]),
-      ]);
-
-      const schemaHexMap = new Map<string, { name: string; revocable: boolean; schemaPda: string }>();
-      for (const s of schemaRows) {
-        schemaHexMap.set(
-          s.schemaId.replace(/^0x/, "").toLowerCase(),
-          { name: s.name, revocable: s.revocable, schemaPda: s.address }
-        );
-      }
-
-      const slotBn = BigInt(slot);
-      const mine: ManagedAttestation[] = attestationRows
-        .map((attestation) => {
-          const sidHex = attestation.schemaIdHex.replace(/^0x/, "").toLowerCase();
-          const schemaInfo = schemaHexMap.get(sidHex);
-          return { ...attestation, schemaName: schemaInfo?.name ?? attestation.schemaName };
-        })
+      const currentSlot = BigInt(await connection.getSlot());
+      const attestationRows = Object.values(attestationMap)
+        .filter((att) => att.issuer === walletAddress)
+        .map((att) => toManagedAttestation(att, schemaMap, currentSlot))
+        .filter((att): att is ManagedAttestation => att !== null)
         .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
-      void slotBn;
-
-      setAttestations(mine);
+      setAttestations(attestationRows);
     } catch (e) {
       showToast(e instanceof Error ? e.message : "Failed to load data", true);
     } finally {
       setLoading(false);
     }
-  }, [publicKey, connection, schemaMap, showToast]);
+  }, [publicKey, walletAddress, connection, schemaMap, attestationMap, showToast]);
 
   useEffect(() => {
     void load();
