@@ -17,19 +17,14 @@ import type { SchemaV2 } from "../lib/schema";
 import {
   bytesToHex,
   hexPubkeyToBase58,
+  hexToBytes,
+  invokeDeprecateSchema,
+  invokeRevokeAttestation,
 } from "../lib/programs";
 import type { Tab } from "./Layout";
 import { ModalShell } from "./ModalShell";
 
-// =============================================================================
-// Constants
-// =============================================================================
-
 const ITEMS_PER_PAGE = 10;
-
-// =============================================================================
-// Types
-// =============================================================================
 
 interface ManagedAttestation {
   address: string;
@@ -48,10 +43,6 @@ interface ManagedAttestation {
   isRevocable: boolean;
 }
 
-// =============================================================================
-// Helpers
-// =============================================================================
-
 function shortAddr(addr: string): string {
   const b58 = hexPubkeyToBase58(addr);
   return `${b58.slice(0, 6)}…${b58.slice(-4)}`;
@@ -62,9 +53,9 @@ function shortHex(hex: string): string {
   return `${clean.slice(0, 10)}…${clean.slice(-6)}`;
 }
 
-// =============================================================================
-// Sub-components
-// =============================================================================
+function toHexKey(value: string): string {
+  return value.startsWith("0x") ? value.toLowerCase() : `0x${value.toLowerCase()}`;
+}
 
 function StatusBadge({ label, variant }: { label: string; variant: "green" | "red" | "yellow" | "gray" }) {
   const cls = {
@@ -103,9 +94,7 @@ function PaginationControls({
       >
         ← Prev
       </button>
-      <span className="text-xs text-mist">
-        Page {page} of {totalPages}
-      </span>
+      <span className="text-xs text-mist">Page {page} of {totalPages}</span>
       <button
         type="button"
         onClick={onNext}
@@ -118,20 +107,19 @@ function PaginationControls({
   );
 }
 
-// =============================================================================
-// Schema card
-// =============================================================================
-
 interface SchemaCardProps {
   schema: SchemaV2;
+  authority: string;
+  signTransaction: (xdr: string) => Promise<string>;
+  onDeprecated: (schema: SchemaV2, txHash: string) => void;
   onAction: (msg: string, isError?: boolean) => void;
 }
 
-function SchemaCard({ schema, onAction }: SchemaCardProps) {
+function SchemaCard({ schema, authority, signTransaction, onDeprecated, onAction }: SchemaCardProps) {
   const uid = useId();
 
   const [delegateInput, setDelegateInput] = useState("");
-  const [busy, setBusy] = useState<string | null>(null); // action label currently running
+  const [busy, setBusy] = useState<string | null>(null);
   const [confirmDeprecateOpen, setConfirmDeprecateOpen] = useState(false);
 
   const runUnavailableAction = useCallback(async (label: string) => {
@@ -146,7 +134,27 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
     }
   }, [onAction]);
 
-  const handleDeprecate = () => runUnavailableAction("Deprecate schema");
+  const handleDeprecate = async () => {
+    if (schema.deprecated) {
+      onAction("This schema is already deprecated.", true);
+      return;
+    }
+
+    setBusy("Deprecate");
+    try {
+      const txHash = await invokeDeprecateSchema({
+        authority,
+        schemaId: hexToBytes(schema.schemaId),
+        signTransaction,
+      });
+      onDeprecated(schema, txHash);
+      onAction(`Schema deprecated successfully. Tx: ${txHash.slice(0, 10)}…${txHash.slice(-6)}`);
+    } catch (e) {
+      onAction(e instanceof Error ? e.message : "Schema deprecation failed", true);
+    } finally {
+      setBusy(null);
+    }
+  };
 
   const handleAddDelegate = () => {
     if (!delegateInput.trim()) return;
@@ -162,21 +170,17 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
   return (
     <>
       <div className={`rounded-xl border bg-ink-900 px-5 py-4 space-y-4 ${schema.deprecated ? "border-ink-800 opacity-70" : "border-ink-700"}`}>
-        {/* Header row */}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
             <p className="font-semibold text-white text-sm truncate">{schema.name}</p>
             <p className="text-xs text-mist font-mono mt-0.5 truncate">{shortHex(schema.schemaId)}</p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
-            {schema.deprecated
-              ? <StatusBadge label="Deprecated" variant="gray" />
-              : <StatusBadge label="Active" variant="green" />}
+            {schema.deprecated ? <StatusBadge label="Deprecated" variant="gray" /> : <StatusBadge label="Active" variant="green" />}
             {schema.revocable && <StatusBadge label="Revocable" variant="yellow" />}
           </div>
         </div>
 
-        {/* Delegates */}
         <div className="space-y-2">
           <p className="text-xs text-ink-500 uppercase tracking-widest font-semibold">Delegates</p>
           {schema.delegates.length === 0 ? (
@@ -199,7 +203,6 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
             </div>
           )}
 
-          {/* Add delegate */}
           {!schema.deprecated && (
             <div className="flex gap-2 pt-1">
               <input
@@ -223,7 +226,6 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
           )}
         </div>
 
-        {/* Actions */}
         {!schema.deprecated && (
           <div className="pt-1 border-t border-ink-800">
             <button
@@ -241,7 +243,6 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
         )}
       </div>
 
-      {/* Deprecate confirmation modal */}
       <ModalShell
         open={confirmDeprecateOpen}
         title="Deprecate Schema"
@@ -283,27 +284,35 @@ function SchemaCard({ schema, onAction }: SchemaCardProps) {
   );
 }
 
-// =============================================================================
-// Attestation card
-// =============================================================================
-
 interface AttestationCardProps {
   att: ManagedAttestation;
+  revoker: string;
+  signTransaction: (xdr: string) => Promise<string>;
+  onRevoked: (attestationUid: string, txHash: string) => void;
   onAction: (msg: string, isError?: boolean) => void;
 }
 
-function AttestationCard({ att, onAction }: AttestationCardProps) {
+function AttestationCard({ att, revoker, signTransaction, onRevoked, onAction }: AttestationCardProps) {
   const [revoking, setRevoking] = useState(false);
   const [confirmRevokeOpen, setConfirmRevokeOpen] = useState(false);
 
   const handleRevoke = async () => {
+    if (att.isRevoked) {
+      onAction("This attestation has already been revoked.", true);
+      return;
+    }
+
     setRevoking(true);
     try {
-      throw new Error("Revocation is not available until the Stellar management contract method is wired.");
+      const txHash = await invokeRevokeAttestation({
+        revoker,
+        uid: att.uid,
+        signTransaction,
+      });
+      onRevoked(att.uidHex, txHash);
+      onAction(`Attestation revoked. Tx: ${txHash.slice(0, 10)}…${txHash.slice(-6)}`);
     } catch (e: unknown) {
-      const msg =
-        (e as { logs?: string[] })?.logs?.find((l: string) => l.includes("Error"))
-        ?? (e instanceof Error ? e.message : "Revocation failed");
+      const msg = e instanceof Error ? e.message : "Revocation failed";
       onAction(msg, true);
     } finally {
       setRevoking(false);
@@ -356,7 +365,6 @@ function AttestationCard({ att, onAction }: AttestationCardProps) {
         )}
       </div>
 
-      {/* Revoke confirmation modal */}
       <ModalShell
         open={confirmRevokeOpen}
         title="Revoke Attestation"
@@ -398,17 +406,15 @@ function AttestationCard({ att, onAction }: AttestationCardProps) {
   );
 }
 
-// =============================================================================
-// Main view
-// =============================================================================
-
 interface ManageViewProps {
   onNavigate?: (tab: Tab) => void;
 }
 
 export function ManageView({ onNavigate }: ManageViewProps = {}) {
-  const { address: walletAddress, publicKey, connection } = useWallet();
+  const { address: walletAddress, publicKey, connection, signTransaction } = useWallet();
   const schemaMap = useSchemaStore((s) => s.schemas);
+  const addSchema = useSchemaStore((s) => s.addSchema);
+  const markTraitInvalid = useSchemaStore((s) => s.markTraitInvalid);
 
   const [attestations, setAttestations] = useState<ManagedAttestation[]>([]);
   const [loading, setLoading] = useState(false);
@@ -418,7 +424,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
   const [attestationPage, setAttestationPage] = useState(1);
   const [schemaPage, setSchemaPage] = useState(1);
 
-  // Schemas this wallet has authority over — sorted newest first
   const mySchemas = useMemo(() => {
     if (!walletAddress) return [];
     return Object.values(schemaMap)
@@ -431,7 +436,23 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     setTimeout(() => setToast(null), 4000);
   }, []);
 
-  // Filter attestations by recipient stealth address hash search
+  const handleSchemaDeprecated = useCallback((schema: SchemaV2) => {
+    addSchema({ ...schema, deprecated: true });
+  }, [addSchema]);
+
+  const handleAttestationRevoked = useCallback((uidHex: string) => {
+    const clean = toHexKey(uidHex);
+    markTraitInvalid(clean);
+    markTraitInvalid(clean.replace(/^0x/, ""));
+    setAttestations((current) =>
+      current.map((att) =>
+        toHexKey(att.uidHex) === clean
+          ? { ...att, isRevoked: true, revocationSlot: att.revocationSlot > 0n ? att.revocationSlot : 1n }
+          : att,
+      ),
+    );
+  }, [markTraitInvalid]);
+
   const filteredAttestations = useMemo(() => {
     const q = recipientSearch.trim().toLowerCase().replace(/^0x/, "");
     if (!q) return attestations;
@@ -441,7 +462,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     });
   }, [attestations, recipientSearch]);
 
-  // Paginated slices
   const pagedAttestations = useMemo(() => {
     const start = (attestationPage - 1) * ITEMS_PER_PAGE;
     return filteredAttestations.slice(start, start + ITEMS_PER_PAGE);
@@ -466,7 +486,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
         Promise.resolve([] as ManagedAttestation[]),
       ]);
 
-      // Build schema lookup for attestation labels
       const schemaHexMap = new Map<string, { name: string; revocable: boolean; schemaPda: string }>();
       for (const s of schemaRows) {
         schemaHexMap.set(
@@ -482,7 +501,7 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
           const schemaInfo = schemaHexMap.get(sidHex);
           return { ...attestation, schemaName: schemaInfo?.name ?? attestation.schemaName };
         })
-        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1)); // newest first
+        .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
 
       void slotBn;
 
@@ -498,7 +517,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
     void load();
   }, [load]);
 
-  // Reset to page 1 when search changes
   useEffect(() => {
     setAttestationPage(1);
   }, [recipientSearch]);
@@ -513,13 +531,10 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-8 space-y-6">
-      {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-white">Manage</h1>
-          <p className="text-sm text-mist mt-1">
-            Schemas you own and attestations you issued.
-          </p>
+          <p className="text-sm text-mist mt-1">Schemas you own and attestations you issued.</p>
         </div>
         <div className="flex items-center gap-2">
           {onNavigate && (
@@ -547,7 +562,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
         </div>
       </div>
 
-      {/* Section tabs */}
       <div className="flex gap-2">
         {(["schemas", "attestations"] as const).map((s) => (
           <button
@@ -568,7 +582,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
         ))}
       </div>
 
-      {/* ── Schemas section ── */}
       {section === "schemas" && (
         <>
           {loading && mySchemas.length === 0 ? (
@@ -583,9 +596,7 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
                 </svg>
               </div>
               <p className="text-white font-medium">No schemas yet</p>
-              <p className="text-sm text-mist max-w-xs mx-auto">
-                You haven't created any schemas. Create one in Schema Studio.
-              </p>
+              <p className="text-sm text-mist max-w-xs mx-auto">You haven't created any schemas. Create one in Schema Studio.</p>
               {onNavigate && (
                 <button
                   type="button"
@@ -600,7 +611,14 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
             <div className="space-y-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {pagedSchemas.map((schema) => (
-                  <SchemaCard key={schema.schemaId} schema={schema} onAction={showToast} />
+                  <SchemaCard
+                    key={schema.schemaId}
+                    schema={schema}
+                    authority={walletAddress}
+                    signTransaction={signTransaction}
+                    onDeprecated={handleSchemaDeprecated}
+                    onAction={showToast}
+                  />
                 ))}
               </div>
               <PaginationControls
@@ -614,16 +632,11 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
         </>
       )}
 
-      {/* ── Attestations section ── */}
       {section === "attestations" && (
         <>
-          {/* Recipient search */}
           {attestations.length > 0 && (
             <div className="relative">
-              <svg
-                className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500 pointer-events-none"
-                fill="none" viewBox="0 0 24 24" stroke="currentColor"
-              >
+              <svg className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-ink-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <input
@@ -657,9 +670,7 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
                 </svg>
               </div>
               <p className="text-white font-medium">No attestations issued</p>
-              <p className="text-sm text-mist max-w-xs mx-auto">
-                You haven't issued any attestations yet.
-              </p>
+              <p className="text-sm text-mist max-w-xs mx-auto">You haven't issued any attestations yet.</p>
               {onNavigate && (
                 <button
                   type="button"
@@ -674,30 +685,24 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
             <div className="rounded-xl border border-ink-800 bg-ink-900/50 px-6 py-8 text-center space-y-2">
               <p className="text-white font-medium">No matching attestations</p>
               <p className="text-sm text-mist">No attestations match that recipient hash.</p>
-              <button
-                type="button"
-                onClick={() => setRecipientSearch("")}
-                className="text-xs text-sol-purple hover:underline"
-              >
+              <button type="button" onClick={() => setRecipientSearch("")} className="text-xs text-sol-purple hover:underline">
                 Clear search
               </button>
             </div>
           ) : (
             <div className="space-y-4">
               {recipientSearch && (
-                <p className="text-xs text-mist">
-                  Showing {filteredAttestations.length} of {attestations.length} attestations
-                </p>
+                <p className="text-xs text-mist">Showing {filteredAttestations.length} of {attestations.length} attestations</p>
               )}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {pagedAttestations.map((att) => (
                   <AttestationCard
                     key={att.uidHex}
                     att={att}
-                    onAction={(msg, isError) => {
-                      showToast(msg, isError);
-                      if (!isError) void load(); // refresh after successful revoke
-                    }}
+                    revoker={walletAddress}
+                    signTransaction={signTransaction}
+                    onRevoked={handleAttestationRevoked}
+                    onAction={showToast}
                   />
                 ))}
               </div>
@@ -712,7 +717,6 @@ export function ManageView({ onNavigate }: ManageViewProps = {}) {
         </>
       )}
 
-      {/* Toast */}
       {toast && (
         <div className={`fixed bottom-24 md:bottom-6 left-4 right-4 md:left-auto md:right-6 z-50 max-w-sm md:ml-auto rounded-xl border px-4 py-3 text-sm shadow-2xl backdrop-blur-lg transition-all ${
           toast.isError
