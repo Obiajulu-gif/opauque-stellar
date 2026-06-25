@@ -5,6 +5,8 @@
   "scripts": {
     "verify:deployment": "node scripts/verify-deployment-manifest.mjs",
     "verify:deployment:strict": "node scripts/verify-deployment-manifest.mjs --strict",
-    "update:manifest-wasm": "node scripts/update-manifest-wasm-hashes.mjs"
+    "update:manifest-wasm": "node scripts/update-manifest-wasm-hashes.mjs",
+    "ops:health": "node scripts/probe-horizon-rpc.mjs",
+    "deploy:rollback": "node scripts/rollback-deployment.mjs --dry-run"
   }
 }

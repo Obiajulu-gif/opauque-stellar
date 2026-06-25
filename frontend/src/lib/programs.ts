@@ -17,6 +17,41 @@ export function bytesToHex(b: Uint8Array): string {
     .join("");
 }
 
+function normalizeBytes32(value: Uint8Array, label: string): Uint8Array {
+  if (value.length !== 32) {
+    throw new Error(`${label} must be exactly 32 bytes; received ${value.length}.`);
+  }
+  return value;
+}
+
+export function mapSchemaManagementError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/Unauthorized|Error\(Contract, #4\)|#4\b/i.test(message)) {
+    return "Only the schema authority can deprecate this schema.";
+  }
+  if (/not.?found|missing|schema/i.test(message)) {
+    return "Schema was not found on-chain. Refresh and try again.";
+  }
+  return message || "Schema management transaction failed.";
+}
+
+export function mapAttestationRevocationError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/AlreadyRevoked|already revoked|Error\(Contract, #5\)|#5\b/i.test(message)) {
+    return "This attestation has already been revoked.";
+  }
+  if (/AttestationNotFound|not.?found|Error\(Contract, #4\)|#4\b/i.test(message)) {
+    return "Attestation was not found on-chain. Refresh and try again.";
+  }
+  if (/NotRevocable|not revocable|Error\(Contract, #6\)|#6\b/i.test(message)) {
+    return "This schema does not allow attestation revocation.";
+  }
+  if (/Unauthorized|Error\(Contract, #7\)|#7\b/i.test(message)) {
+    return "Only the issuer, schema authority, or authorized delegate can revoke this attestation.";
+  }
+  return message || "Attestation revocation transaction failed.";
+}
+
 export async function invokeRegisterSchema(opts: {
   authority: string;
   schemaId: Uint8Array;
@@ -47,6 +82,27 @@ export async function invokeRegisterSchema(opts: {
   });
 }
 
+export async function invokeDeprecateSchema(opts: {
+  authority: string;
+  schemaId: Uint8Array;
+  signTransaction: SignTxFn;
+}): Promise<string> {
+  try {
+    return await invokeContractMethod({
+      sourcePublicKey: opts.authority,
+      contractId: SCHEMA_REGISTRY_CONTRACT_ID,
+      method: "deprecate_schema",
+      args: [
+        nativeToScVal(opts.authority, { type: "address" }),
+        nativeToScVal(Buffer.from(normalizeBytes32(opts.schemaId, "schemaId")), { type: "bytes" }),
+      ],
+      signTransaction: opts.signTransaction,
+    });
+  } catch (error) {
+    throw new Error(mapSchemaManagementError(error));
+  }
+}
+
 export async function invokeAttest(opts: {
   issuer: string;
   schemaId: Uint8Array;
@@ -71,6 +127,28 @@ export async function invokeAttest(opts: {
     ],
     signTransaction: opts.signTransaction,
   });
+}
+
+export async function invokeRevokeAttestation(opts: {
+  revoker: string;
+  uid: Uint8Array;
+  signTransaction: SignTxFn;
+}): Promise<string> {
+  try {
+    return await invokeContractMethod({
+      sourcePublicKey: opts.revoker,
+      contractId: ATTESTATION_ENGINE_V2_CONTRACT_ID,
+      method: "revoke_attestation",
+      args: [
+        nativeToScVal(opts.revoker, { type: "address" }),
+        nativeToScVal(Buffer.from(normalizeBytes32(opts.uid, "uid")), { type: "bytes" }),
+        nativeToScVal(SCHEMA_REGISTRY_CONTRACT_ID, { type: "address" }),
+      ],
+      signTransaction: opts.signTransaction,
+    });
+  } catch (error) {
+    throw new Error(mapAttestationRevocationError(error));
+  }
 }
 
 export async function invokeVerifyProofV2(opts: {
@@ -124,9 +202,9 @@ export function buildVerifyProofV2Instruction(): never {
 /** @deprecated use announceStealthTransfer from contracts */
 export { buildAnnounceInstruction } from "./contracts";
 
-/** @deprecated Soroban schema management not yet wired in the UI */
+/** @deprecated */
 export function buildDeprecateSchemaInstruction(): never {
-  throw new Error("Schema deprecation on Stellar is not yet implemented in the UI");
+  throw new Error("Use invokeDeprecateSchema() on Stellar");
 }
 
 /** @deprecated */
@@ -141,7 +219,7 @@ export function buildRemoveDelegateInstruction(): never {
 
 /** @deprecated */
 export function buildRevokeInstruction(): never {
-  throw new Error("Attestation revocation on Stellar is not yet implemented in the UI");
+  throw new Error("Use invokeRevokeAttestation() on Stellar");
 }
 
 export { hexToBytes } from "./stealth";
