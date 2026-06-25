@@ -1,0 +1,54 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Example previous manifest used by scripts/rollback-deployment.mjs. Copy to testnet.previous.json after a known-good deployment is validated.",
+  "release": "v1",
+  "network": "testnet",
+  "networkPassphrase": "Test SDF Network ; September 2015",
+  "rpcUrl": "https://soroban-testnet.stellar.org",
+  "horizonUrl": "https://horizon-testnet.stellar.org",
+  "deploymentLedger": null,
+  "deployedAt": null,
+  "deployer": null,
+  "admin": null,
+  "multisig": null,
+  "deploymentStatus": "known-good-placeholder",
+  "contracts": {
+    "stealthRegistry": {
+      "id": "",
+      "wasmHash": "",
+      "package": "stealth-registry"
+    },
+    "stealthAnnouncer": {
+      "id": "",
+      "wasmHash": "",
+      "package": "stealth-announcer"
+    },
+    "groth16Verifier": {
+      "id": "",
+      "wasmHash": "",
+      "package": "groth16-verifier"
+    },
+    "reputationVerifier": {
+      "id": "",
+      "wasmHash": "",
+      "package": "reputation-verifier"
+    },
+    "schemaRegistry": {
+      "id": "",
+      "wasmHash": "",
+      "package": "schema-registry"
+    },
+    "attestationEngineV2": {
+      "id": "",
+      "wasmHash": "",
+      "package": "attestation-engine-v2"
+    }
+  },
+  "verification": {
+    "postRollbackSmoke": [
+      "node scripts/verify-deployment-manifest.mjs --network testnet --strict",
+      "node scripts/probe-horizon-rpc.mjs --network testnet",
+      "cd frontend && npm run build"
+    ]
+  }
+}
