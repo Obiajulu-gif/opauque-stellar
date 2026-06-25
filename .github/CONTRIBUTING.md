@@ -37,6 +37,11 @@ the same checks locally before you push will keep your PR green.
   ```bash
   cargo install cargo-audit cargo-deny --locked
   ```
+- [pre-commit](https://pre-commit.com/) for secret detection:
+  ```bash
+  pip install pre-commit
+  pre-commit install
+  ```
 
 ---
 
@@ -49,6 +54,29 @@ the same checks locally before you push will keep your PR green.
 - Keep PRs focused and small. One logical change per PR.
 - **Never** commit secrets, raw seeds (`S...`), `.env` files, or large build
   artifacts (zkeys, WASM blobs, `target/`). These are gitignored — keep it that way.
+
+### Secret detection
+
+This project uses **gitleaks** to automatically detect secrets in commits:
+
+- **Pre-commit hook**: Runs automatically on every commit (install with `pre-commit install`)
+- **CI check**: Runs on all pull requests and pushes to main
+- **Configuration**: Defined in `.gitleaks.toml` with documented false-positive allowlists
+
+**Common secret patterns that will be detected:**
+- API keys (AWS, Google Cloud, Stripe, etc.)
+- Private keys and certificates (PEM, PKCS8, etc.)
+- Database connection strings
+- JWT tokens and bearer tokens
+- Stellar secret seeds (`S...`)
+- Environment variable assignments with sensitive values
+
+**If gitleaks blocks your commit:**
+1. Verify the finding is not a real secret
+2. If it's a false positive, add it to `.gitleaks.toml` allowlist with justification
+3. Allowlist changes require PR review
+
+**Never bypass secret detection** with `git commit --no-verify` unless you have verified the finding is a false positive and documented the reason.
 
 ---
 

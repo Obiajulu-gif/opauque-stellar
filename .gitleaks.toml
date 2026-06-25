@@ -1,0 +1,40 @@
+# Gitleaks configuration for Opaque Stellar
+# This file defines secret detection rules and false-positive allowlists
+# Review changes to this file in PRs - allowlist additions require justification
+
+title = "gitleaks config"
+
+# Extend the default gitleaks rules
+[extend]
+useDefault = true
+
+# Allowlist for known false positives
+# IMPORTANT: Any additions to this allowlist must be reviewed in PRs
+[allowlist]
+description = "Global allowlist for known false positives"
+paths = [
+    '''\.env\.example$''',
+    '''\.gitignore$''',
+    '''node_modules/''',
+    '''target/''',
+    '''\.ptau$''',
+    '''\.log$''',
+    '''test_snapshots/''',
+    '''\.idea/''',
+    '''\.DS_Store$''',
+]
+
+# Allow specific commits or branches if needed (use sparingly)
+# commits = [
+#     "abcdef1234567890",
+# ]
+
+# Allow specific regex patterns that are known false positives
+# regexes = [
+#     "example-false-positive-pattern",
+# ]
+
+# Rule-specific allowlists can be added here if needed
+# [rules.allowlist]
+# description = "Allowlist for specific rule"
+# regexes = ["pattern-to-allow"]

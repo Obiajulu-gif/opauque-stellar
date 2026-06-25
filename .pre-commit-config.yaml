@@ -1,0 +1,15 @@
+# Pre-commit hooks for Opaque Stellar
+# Install: pip install pre-commit
+# Run: pre-commit install
+# Skip on specific commit: git commit --no-verify -m "message"
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.18.4
+    hooks:
+      - id: gitleaks
+        name: Detect secrets with Gitleaks
+        description: Detect secrets in staged files using gitleaks
+        entry: gitleaks protect --verbose --config .gitleaks.toml --staged
+        language: golang
+        pass_filenames: false
