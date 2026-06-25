@@ -11,6 +11,12 @@ export const SCHEMA_REGISTRY_CONTRACT_ID = deployedAddresses.schemaRegistry;
 export const ATTESTATION_ENGINE_V2_CONTRACT_ID = deployedAddresses.attestationEngineV2;
 export const GROTH16_VERIFIER_CONTRACT_ID = deployedAddresses.groth16Verifier;
 
+export interface SorobanInvocationInstruction {
+  contractId: string;
+  method: string;
+  args: ReturnType<typeof nativeToScVal>[];
+}
+
 export function bytesToHex(b: Uint8Array): string {
   return Array.from(b)
     .map((x) => x.toString(16).padStart(2, "0"))
@@ -28,6 +34,9 @@ export function mapSchemaManagementError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   if (/Unauthorized|Error\(Contract, #4\)|#4\b/i.test(message)) {
     return "Only the schema authority can deprecate this schema.";
+  }
+  if (/already.?deprecated|deprecated|Error\(Contract, #5\)|#5\b/i.test(message)) {
+    return "This schema has already been deprecated.";
   }
   if (/not.?found|missing|schema/i.test(message)) {
     return "Schema was not found on-chain. Refresh and try again.";
@@ -50,6 +59,35 @@ export function mapAttestationRevocationError(error: unknown): string {
     return "Only the issuer, schema authority, or authorized delegate can revoke this attestation.";
   }
   return message || "Attestation revocation transaction failed.";
+}
+
+export function buildDeprecateSchemaInstruction(opts: {
+  authority: string;
+  schemaId: Uint8Array;
+}): SorobanInvocationInstruction {
+  return {
+    contractId: SCHEMA_REGISTRY_CONTRACT_ID,
+    method: "deprecate_schema",
+    args: [
+      nativeToScVal(opts.authority, { type: "address" }),
+      nativeToScVal(Buffer.from(normalizeBytes32(opts.schemaId, "schemaId")), { type: "bytes" }),
+    ],
+  };
+}
+
+export function buildRevokeInstruction(opts: {
+  revoker: string;
+  uid: Uint8Array;
+}): SorobanInvocationInstruction {
+  return {
+    contractId: ATTESTATION_ENGINE_V2_CONTRACT_ID,
+    method: "revoke_attestation",
+    args: [
+      nativeToScVal(opts.revoker, { type: "address" }),
+      nativeToScVal(Buffer.from(normalizeBytes32(opts.uid, "uid")), { type: "bytes" }),
+      nativeToScVal(SCHEMA_REGISTRY_CONTRACT_ID, { type: "address" }),
+    ],
+  };
 }
 
 export async function invokeRegisterSchema(opts: {
@@ -88,14 +126,12 @@ export async function invokeDeprecateSchema(opts: {
   signTransaction: SignTxFn;
 }): Promise<string> {
   try {
+    const instruction = buildDeprecateSchemaInstruction(opts);
     return await invokeContractMethod({
       sourcePublicKey: opts.authority,
-      contractId: SCHEMA_REGISTRY_CONTRACT_ID,
-      method: "deprecate_schema",
-      args: [
-        nativeToScVal(opts.authority, { type: "address" }),
-        nativeToScVal(Buffer.from(normalizeBytes32(opts.schemaId, "schemaId")), { type: "bytes" }),
-      ],
+      contractId: instruction.contractId,
+      method: instruction.method,
+      args: instruction.args,
       signTransaction: opts.signTransaction,
     });
   } catch (error) {
@@ -135,15 +171,12 @@ export async function invokeRevokeAttestation(opts: {
   signTransaction: SignTxFn;
 }): Promise<string> {
   try {
+    const instruction = buildRevokeInstruction(opts);
     return await invokeContractMethod({
       sourcePublicKey: opts.revoker,
-      contractId: ATTESTATION_ENGINE_V2_CONTRACT_ID,
-      method: "revoke_attestation",
-      args: [
-        nativeToScVal(opts.revoker, { type: "address" }),
-        nativeToScVal(Buffer.from(normalizeBytes32(opts.uid, "uid")), { type: "bytes" }),
-        nativeToScVal(SCHEMA_REGISTRY_CONTRACT_ID, { type: "address" }),
-      ],
+      contractId: instruction.contractId,
+      method: instruction.method,
+      args: instruction.args,
       signTransaction: opts.signTransaction,
     });
   } catch (error) {
@@ -203,11 +236,6 @@ export function buildVerifyProofV2Instruction(): never {
 export { buildAnnounceInstruction } from "./contracts";
 
 /** @deprecated */
-export function buildDeprecateSchemaInstruction(): never {
-  throw new Error("Use invokeDeprecateSchema() on Stellar");
-}
-
-/** @deprecated */
 export function buildAddDelegateInstruction(): never {
   throw new Error("Delegate management on Stellar is not yet implemented in the UI");
 }
@@ -215,11 +243,6 @@ export function buildAddDelegateInstruction(): never {
 /** @deprecated */
 export function buildRemoveDelegateInstruction(): never {
   throw new Error("Delegate management on Stellar is not yet implemented in the UI");
-}
-
-/** @deprecated */
-export function buildRevokeInstruction(): never {
-  throw new Error("Use invokeRevokeAttestation() on Stellar");
 }
 
 export { hexToBytes } from "./stealth";

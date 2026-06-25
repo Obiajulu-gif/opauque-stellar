@@ -5,21 +5,29 @@
     "testnet": {
       "horizon": {
         "primary": "https://horizon-testnet.stellar.org",
-        "fallbacks": []
+        "fallbacks": [
+          "https://horizon-testnet.stellar.lobstr.co"
+        ]
       },
       "rpc": {
         "primary": "https://soroban-testnet.stellar.org",
-        "fallbacks": []
+        "fallbacks": [
+          "https://rpc-futurenet.stellar.org"
+        ]
       }
     },
     "mainnet": {
       "horizon": {
         "primary": "https://horizon.stellar.org",
-        "fallbacks": []
+        "fallbacks": [
+          "https://horizon.stellar.lobstr.co"
+        ]
       },
       "rpc": {
         "primary": "https://mainnet.sorobanrpc.com",
-        "fallbacks": []
+        "fallbacks": [
+          "https://soroban-rpc.mainnet.stellar.gateway.fm"
+        ]
       }
     }
   },
@@ -29,6 +37,8 @@
     "maxErrorRate": 0
   },
   "alerting": {
-    "webhookEnv": "OPS_ALERT_WEBHOOK_URL"
+    "webhookEnv": "OPS_ALERT_WEBHOOK_URL",
+    "payloadFormat": "json",
+    "failureLogLevel": "error"
   }
 }

@@ -68,11 +68,22 @@ interface SchemaStoreState {
   setDiscoveredTraits: (traits: V2DiscoveredTrait[]) => void;
   addDiscoveredTrait: (trait: V2DiscoveredTrait) => void;
   markTraitInvalid: (attestationUid: string) => void;
+  removeRevokedTrait: (attestationUid: string) => void;
   setAttestations: (attestations: AttestationV2[]) => void;
   setIsFetchingSchemas: (v: boolean) => void;
   setIsScanning: (v: boolean) => void;
   setLastScannedSlot: (slot: number) => void;
   clearTraits: () => void;
+}
+
+function uidVariants(uid: string): string[] {
+  const clean = uid.trim().toLowerCase().replace(/^0x/, "");
+  if (!clean) return [];
+  return [clean, `0x${clean}`];
+}
+
+function keyForTrait(uid: string): string {
+  return uid.startsWith("0x") ? uid.toLowerCase() : `0x${uid.toLowerCase()}`;
 }
 
 export const useSchemaStore = create<SchemaStoreState>()(
@@ -98,7 +109,7 @@ export const useSchemaStore = create<SchemaStoreState>()(
       setDiscoveredTraits: (traits) =>
         set({
           discoveredTraits: Object.fromEntries(
-            traits.map((t) => [t.attestationUid, t])
+            traits.map((t) => [keyForTrait(t.attestationUid), t])
           ),
         }),
 
@@ -106,20 +117,39 @@ export const useSchemaStore = create<SchemaStoreState>()(
         set((state) => ({
           discoveredTraits: {
             ...state.discoveredTraits,
-            [trait.attestationUid]: trait,
+            [keyForTrait(trait.attestationUid)]: trait,
           },
         })),
 
       markTraitInvalid: (attestationUid) =>
         set((state) => {
-          const trait = state.discoveredTraits[attestationUid];
-          if (!trait) return state;
-          return {
-            discoveredTraits: {
-              ...state.discoveredTraits,
-              [attestationUid]: { ...trait, isValid: false },
-            },
-          };
+          const next = { ...state.discoveredTraits };
+          let changed = false;
+
+          for (const key of uidVariants(attestationUid)) {
+            const trait = next[key];
+            if (trait) {
+              next[key] = { ...trait, isValid: false };
+              changed = true;
+            }
+          }
+
+          return changed ? { discoveredTraits: next } : state;
+        }),
+
+      removeRevokedTrait: (attestationUid) =>
+        set((state) => {
+          const variants = new Set(uidVariants(attestationUid));
+          if (variants.size === 0) return state;
+
+          const discoveredTraits = Object.fromEntries(
+            Object.entries(state.discoveredTraits).filter(([key, trait]) => {
+              const traitUid = trait.attestationUid.toLowerCase().replace(/^0x/, "");
+              return !variants.has(key.toLowerCase()) && !variants.has(traitUid) && !variants.has(`0x${traitUid}`);
+            }),
+          );
+
+          return { discoveredTraits };
         }),
 
       setAttestations: (attestations) =>
