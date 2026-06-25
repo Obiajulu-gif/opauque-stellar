@@ -15,7 +15,11 @@
     "verify:artifacts": "tsx scripts/verify-artifact-manifest.ts",
     "update:artifacts": "tsx scripts/update-artifact-manifest.ts --sync-deployments --embedded-vk",
     "prepare:frontend": "tsx scripts/prepare-frontend-artifacts.ts",
-    "test:circuits": "npm run test:regression --prefix circuits"
+    "test:circuits": "npm run test:regression --prefix circuits",
+    "ci:local": "bash scripts/ci-local.sh",
+    "check:wasm-sizes": "tsx scripts/check-wasm-sizes.ts",
+    "sign:artifacts": "tsx scripts/sign-release-artifacts.ts",
+    "verify:signatures": "tsx scripts/verify-artifact-signatures.ts"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

@@ -84,6 +84,10 @@ This project uses **gitleaks** to automatically detect secrets in commits:
 
 These mirror `.github/workflows/ci.yml` exactly. Run them locally:
 
+> **Quick start:** Run `npm run ci:local` (or `./scripts/ci-local.sh`) to execute
+> all checks in the same order as CI. Pass `--contracts`, `--frontend`, `--scanner`,
+> `--circuits`, or `--supply` to run a subset.
+
 ### 4a. Contracts (Rust workspace)
 
 ```bash
@@ -138,6 +142,31 @@ npx vitest run            # unit tests
 npm run verify:deployment           # manifest schema + no legacy Solana/devnet refs
 cargo audit
 cargo deny check
+```
+
+### 4f. WASM size budgets
+
+```bash
+npm run check:wasm-sizes            # verify WASM sizes stay within documented budgets
+```
+
+Budget thresholds are defined in `scripts/check-wasm-sizes.ts`. If a contract
+exceeds its budget, either refactor the contract or update the budget with
+justification in the PR description.
+
+### 4g. Artifact signatures (release only)
+
+```bash
+npm run verify:signatures           # verify release artifact signatures
+```
+
+Release artifacts are signed with a dedicated signing key. Signatures are
+distributed alongside artifacts as `.sig` files (hex-encoded SHA256-with-RSA).
+The public verification key is at `artifacts/public-verify-key.pem`.
+
+Maintainers can sign artifacts with:
+```bash
+SIGNING_KEY="$(cat /path/to/signing-key.pem)" npm run sign:artifacts
 ```
 
 ---
